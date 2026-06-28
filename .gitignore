@@ -46,3 +46,6 @@ ground-station/uploads/
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# Claude
+.claude/
