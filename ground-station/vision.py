@@ -80,8 +80,11 @@ class VisionPipeline:
         mask = cv2.inRange(hsv, lower, upper)
 
         # 4. Morfologi: erode untuk hilangkan noise, dilate untuk isi gap
-        mask = cv2.erode(mask, self._erode_kernel, iterations=2)
-        mask = cv2.dilate(mask, self._dilate_kernel, iterations=2)
+        #    Iterasi dibaca live dari config agar bisa dikalibrasi via UI.
+        if config.ERODE_ITER > 0:
+            mask = cv2.erode(mask, self._erode_kernel, iterations=config.ERODE_ITER)
+        if config.DILATE_ITER > 0:
+            mask = cv2.dilate(mask, self._dilate_kernel, iterations=config.DILATE_ITER)
         self._last_mask = mask
 
         # 5. Cari kontur
@@ -101,8 +104,8 @@ class VisionPipeline:
         largest = max(contours, key=cv2.contourArea)
         area = cv2.contourArea(largest)
 
-        # Filter area terlalu kecil (noise)
-        if area < 50:
+        # Filter area terlalu kecil (noise) — ambang dibaca live dari config
+        if area < config.MIN_CONTOUR_AREA:
             return self._empty_result(annotated)
 
         # 7. Hitung centroid via moments

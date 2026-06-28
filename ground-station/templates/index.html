@@ -6,12 +6,24 @@
     <meta name="description" content="Ground Station — Sistem kontrol robot pengumpul bola ping-pong berbasis computer vision.">
     <title>Robot Pengumpul Bola — Control Center</title>
 
-    <!-- Font: JetBrains Mono (monospace) + Inter (UI) -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+    <!-- Favicon inline (data URI) — cegah request /favicon.ico yang 404 & offline-safe. -->
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='10' fill='%2300d4ff'/%3E%3Ccircle cx='12' cy='12' r='4' fill='%2316213e'/%3E%3C/svg%3E">
 
-    <link rel="stylesheet" href="/static/css/style.css">
+    <!-- Font & CSS 100% LOKAL — nol ketergantungan internet.
+         Penting: saat ESP32 mode AP, laptop konek WiFi robot tanpa internet. -->
+    <link rel="stylesheet" href="/static/css/fonts.css?v=4">
+    <link rel="stylesheet" href="/static/css/style.css?v=5">
+
+    <!-- Import map three.js (di-host LOKAL) untuk viewer 3D robot.
+         Wajib dideklarasi sebelum module mana pun di-load. -->
+    <script type="importmap">
+    {
+      "imports": {
+        "three": "/static/js/vendor/three/three.module.min.js",
+        "three/addons/": "/static/js/vendor/three/jsm/"
+      }
+    }
+    </script>
 </head>
 <body>
 
@@ -36,6 +48,14 @@
             </div>
         </div>
         <div class="header-right">
+            <div class="status-pill" id="source-pill" title="Sumber video aktif">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+                <span id="source-label">Webcam</span>
+            </div>
+            <div class="status-pill" id="robot-pill" title="Status kemudi robot fisik">
+                <span class="status-dot" id="robot-dot"></span>
+                <span id="robot-label">Robot Off</span>
+            </div>
             <div class="status-pill" id="conn-status-pill">
                 <span class="status-dot" id="conn-dot"></span>
                 <span id="conn-label">Terputus</span>
@@ -48,239 +68,498 @@
     <!-- ═══════════════════════════════════════════════════════ -->
     <main id="dashboard">
 
-        <!-- ─── Video Panel (60%) ──────────────────────────── -->
+        <!-- ─── Video Panel ────────────────────────────────── -->
         <section class="video-panel" id="video-panel">
             <div class="video-wrapper">
                 <img id="video-feed" src="/video_feed" alt="Live Feed">
                 <div class="video-overlay fps-overlay" id="fps-overlay">
-                    <span class="mono">FPS: </span><span class="mono" id="fps-val">--</span>
+                    <span class="mono">FPS </span><span class="mono" id="fps-val">--</span>
                 </div>
+                <div class="video-overlay source-badge" id="source-badge">WEBCAM</div>
                 <div class="video-overlay state-badge" id="state-badge">IDLE</div>
                 <div class="video-overlay detection-overlay" id="detection-overlay">
                     <span id="detection-text">Tidak ada deteksi</span>
                 </div>
             </div>
+
+            <!-- Strip telemetri ringkas di bawah video -->
+            <div class="quickstats" id="quickstats">
+                <div class="qstat">
+                    <span class="qstat-label">State</span>
+                    <span class="qstat-value mono" id="qs-state">IDLE</span>
+                </div>
+                <div class="qstat">
+                    <span class="qstat-label">Bola</span>
+                    <span class="qstat-value mono accent-green" id="qs-balls">0</span>
+                </div>
+                <div class="qstat">
+                    <span class="qstat-label">Heading</span>
+                    <span class="qstat-value mono accent-blue" id="qs-heading">0°</span>
+                </div>
+                <div class="qstat">
+                    <span class="qstat-label">Loop FPS</span>
+                    <span class="qstat-value mono" id="qs-fps">--</span>
+                </div>
+                <div class="qstat">
+                    <span class="qstat-label">Baterai</span>
+                    <span class="qstat-value mono" id="qs-vbat">--</span>
+                </div>
+            </div>
         </section>
 
-        <!-- ─── Control Panel (40%) ────────────────────────── -->
+        <!-- ─── Control Panel (tabbed) ─────────────────────── -->
         <aside class="control-panel" id="control-panel">
 
-            <!-- Card: Koneksi -->
-            <div class="card" id="card-connection">
-                <div class="card-header">
-                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><circle cx="12" cy="20" r="1"/></svg>
-                    <h2>Koneksi Robot</h2>
+            <!-- Tab bar -->
+            <nav class="tab-bar" id="tab-bar">
+                <button class="tab-btn active" data-tab="kontrol">
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5 12 2"/></svg>
+                    Kontrol
+                </button>
+                <button class="tab-btn" data-tab="kalibrasi">
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
+                    Kalibrasi
+                </button>
+                <button class="tab-btn" data-tab="sensor">
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+                    Sensor
+                </button>
+            </nav>
+
+            <!-- ════════════════════════════════════════════════ -->
+            <!-- TAB: KONTROL                                      -->
+            <!-- ════════════════════════════════════════════════ -->
+            <div class="tab-content active" id="tab-kontrol">
+
+                <!-- Card: Sumber Video & Koneksi -->
+                <div class="card" id="card-source">
+                    <div class="card-header">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+                        <h2>Sumber Video & Robot</h2>
+                    </div>
+                    <div class="card-body">
+                        <!-- Pemilih sumber -->
+                        <div class="segmented" id="source-seg">
+                            <button class="seg-btn" data-source="esp32">ESP32-CAM</button>
+                            <button class="seg-btn active" data-source="webcam">Webcam</button>
+                            <button class="seg-btn" data-source="video">Video File</button>
+                        </div>
+
+                        <!-- Input IP (ESP32 / robot) — tampil saat sumber ESP32 -->
+                        <div class="input-group hidden" id="ip-group">
+                            <input type="text" id="esp32-ip" placeholder="192.168.4.1" value="192.168.4.1">
+                            <button class="btn btn-primary" id="btn-connect">
+                                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+                                Terapkan
+                            </button>
+                        </div>
+
+                        <!-- Pemilih index webcam — tampil saat sumber Webcam -->
+                        <div class="webcam-group" id="webcam-group">
+                            <div class="input-group">
+                                <input type="number" id="webcam-index" min="0" max="9" step="1" value="0" title="Index device kamera">
+                                <button class="btn btn-primary" id="btn-webcam-apply">Pakai Kamera</button>
+                            </div>
+                            <button class="btn btn-ghost btn-block btn-sm" id="btn-scan-cam">
+                                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                                Pindai Kamera Tersedia
+                            </button>
+                            <div class="webcam-hint" id="webcam-hint">Coba index 0, 1, 2… bila kamera salah / hanya tampil warna polos.</div>
+                        </div>
+
+                        <!-- Upload file video (muncul saat mode video) -->
+                        <div class="video-upload hidden" id="video-upload">
+                            <input type="file" id="video-file-input" accept="video/*" hidden>
+                            <button class="btn btn-ghost btn-block" id="btn-upload-video">
+                                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                                <span id="upload-label">Pilih File Video…</span>
+                            </button>
+                        </div>
+
+                        <!-- Toggle: kemudikan robot asli -->
+                        <div class="toggle-row" id="drive-toggle-row">
+                            <div class="toggle-text">
+                                <span class="toggle-title">Kemudikan Robot Asli</span>
+                                <span class="toggle-sub">Kirim command ke ESP32 walau vision lokal</span>
+                            </div>
+                            <label class="switch">
+                                <input type="checkbox" id="drive-toggle">
+                                <span class="slider-toggle"></span>
+                            </label>
+                        </div>
+
+                        <div class="status-row">
+                            <span class="label">Sumber:</span>
+                            <span class="value" id="conn-detail">Webcam</span>
+                        </div>
+                        <div class="status-row">
+                            <span class="label">Robot:</span>
+                            <span class="value" id="robot-detail">Tidak dikemudikan</span>
+                        </div>
+                    </div>
                 </div>
-                <div class="card-body">
-                    <div class="input-group">
-                        <input type="text" id="esp32-ip" placeholder="192.168.4.1" value="192.168.4.1">
-                        <button class="btn btn-primary" id="btn-connect">
-                            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
-                            Hubungkan
-                        </button>
+
+                <!-- Card: Mode Operasi -->
+                <div class="card" id="card-mode">
+                    <div class="card-header">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                        <h2>Mode Operasi</h2>
                     </div>
-                    <div class="status-row">
-                        <span class="label">Status:</span>
-                        <span class="value" id="conn-detail">Belum terhubung</span>
+                    <div class="card-body">
+                        <div class="mode-switch">
+                            <button class="btn btn-mode active" id="btn-manual" data-mode="manual">Manual</button>
+                            <button class="btn btn-mode" id="btn-auto" data-mode="auto">Otomatis</button>
+                        </div>
+                        <div class="status-row">
+                            <span class="label">State:</span>
+                            <span class="value mono" id="brain-state">IDLE</span>
+                        </div>
+                        <div class="status-row">
+                            <span class="label">Durasi:</span>
+                            <span class="value mono" id="state-duration">0.0s</span>
+                        </div>
+                        <div class="status-row">
+                            <span class="label">Bola terkumpul:</span>
+                            <span class="value mono accent-green" id="balls-collected">0</span>
+                        </div>
                     </div>
-                    <div class="status-row">
-                        <span class="label">Mode:</span>
-                        <span class="value" id="conn-mode">—</span>
+                </div>
+
+                <!-- Card: Kontrol Manual (mecanum) -->
+                <div class="card" id="card-controls">
+                    <div class="card-header">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5 12 2"/><line x1="12" y1="22" x2="12" y2="15.5"/><polyline points="22 8.5 12 15.5 2 8.5"/></svg>
+                        <h2>Kontrol Manual</h2>
+                    </div>
+                    <div class="card-body">
+                        <div class="control-grid">
+                            <button class="btn btn-ctrl" id="btn-strafe-fl" data-cmd="strafe-fl" title="Strafe + Maju kiri">⬉</button>
+                            <button class="btn btn-ctrl" id="btn-fwd" data-cmd="forward" title="W — Maju">▲</button>
+                            <button class="btn btn-ctrl" id="btn-strafe-fr" data-cmd="strafe-fr" title="Strafe + Maju kanan">⬈</button>
+                            <button class="btn btn-ctrl" id="btn-left" data-cmd="left" title="A — Strafe Kiri">◀</button>
+                            <button class="btn btn-ctrl btn-stop" id="btn-stop" data-cmd="stop" title="Space — Berhenti">■</button>
+                            <button class="btn btn-ctrl" id="btn-right" data-cmd="right" title="D — Strafe Kanan">▶</button>
+                            <button class="btn btn-ctrl" id="btn-strafe-rl" data-cmd="strafe-rl" title="Strafe + Mundur kiri">⬋</button>
+                            <button class="btn btn-ctrl" id="btn-bwd" data-cmd="backward" title="S — Mundur">▼</button>
+                            <button class="btn btn-ctrl" id="btn-strafe-rr" data-cmd="strafe-rr" title="Strafe + Mundur kanan">⬊</button>
+                        </div>
+                        <div class="rotate-row">
+                            <button class="btn btn-ctrl btn-rot" id="btn-ccw" data-cmd="ccw" title="Q — Putar Kiri">↺</button>
+                            <span class="rotate-label">Rotasi</span>
+                            <button class="btn btn-ctrl btn-rot" id="btn-cw" data-cmd="cw" title="E — Putar Kanan">↻</button>
+                        </div>
+                        <div class="shortcut-hint">
+                            <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> Gerak &nbsp;
+                            <kbd>Q</kbd><kbd>E</kbd> Putar &nbsp;
+                            <kbd>Space</kbd> Stop &nbsp;
+                            <kbd>T</kbd> Mode
+                        </div>
+                        <div class="servo-controls">
+                            <button class="btn btn-sm btn-accent" id="btn-servo-open">Servo Buka</button>
+                            <button class="btn btn-sm btn-accent" id="btn-servo-close">Servo Tutup</button>
+                            <button class="btn btn-sm btn-accent" id="btn-servo-collect">Collect</button>
+                        </div>
+                        <!-- Feedback perintah terakhir -->
+                        <div class="cmd-status" id="cmd-status">
+                            <span class="cmd-status-dot"></span>
+                            <span id="cmd-status-text">Siap — belum ada perintah</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Card: Logging -->
+                <div class="card" id="card-logging">
+                    <div class="card-header">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                        <h2>Data Logging</h2>
+                    </div>
+                    <div class="card-body">
+                        <div class="log-controls">
+                            <button class="btn btn-sm btn-record" id="btn-log-toggle">
+                                <span class="rec-dot" id="rec-dot"></span>
+                                <span id="btn-log-text">Mulai Recording</span>
+                            </button>
+                        </div>
+                        <div class="status-row">
+                            <span class="label">File:</span>
+                            <span class="value mono" id="log-filename">—</span>
+                        </div>
+                        <div class="status-row">
+                            <span class="label">Entri:</span>
+                            <span class="value mono" id="log-entries">0</span>
+                        </div>
+                        <div class="status-row">
+                            <span class="label">Durasi:</span>
+                            <span class="value mono" id="log-elapsed">0s</span>
+                        </div>
                     </div>
                 </div>
             </div>
 
-            <!-- Card: Mode Toggle -->
-            <div class="card" id="card-mode">
-                <div class="card-header">
-                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-                    <h2>Mode Operasi</h2>
+            <!-- ════════════════════════════════════════════════ -->
+            <!-- TAB: KALIBRASI                                    -->
+            <!-- ════════════════════════════════════════════════ -->
+            <div class="tab-content" id="tab-kalibrasi">
+
+                <!-- Card: HSV Tuning -->
+                <div class="card" id="card-hsv">
+                    <div class="card-header">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><line x1="2" y1="12" x2="22" y2="12"/></svg>
+                        <h2>HSV — Warna Bola</h2>
+                    </div>
+                    <div class="card-body">
+                        <div class="hsv-preview-wrapper">
+                            <img id="hsv-preview" src="/hsv_preview" alt="HSV Mask Preview">
+                            <span class="preview-tag">MASK</span>
+                        </div>
+                        <div class="hsv-sliders">
+                            <div class="slider-row">
+                                <label>H Min</label>
+                                <input type="range" class="hsv-slider hue-slider" id="h_min" min="0" max="179" value="5">
+                                <span class="slider-val mono" id="h_min_val">5</span>
+                            </div>
+                            <div class="slider-row">
+                                <label>H Max</label>
+                                <input type="range" class="hsv-slider hue-slider" id="h_max" min="0" max="179" value="25">
+                                <span class="slider-val mono" id="h_max_val">25</span>
+                            </div>
+                            <div class="slider-row">
+                                <label>S Min</label>
+                                <input type="range" class="hsv-slider sat-slider" id="s_min" min="0" max="255" value="100">
+                                <span class="slider-val mono" id="s_min_val">100</span>
+                            </div>
+                            <div class="slider-row">
+                                <label>S Max</label>
+                                <input type="range" class="hsv-slider sat-slider" id="s_max" min="0" max="255" value="255">
+                                <span class="slider-val mono" id="s_max_val">255</span>
+                            </div>
+                            <div class="slider-row">
+                                <label>V Min</label>
+                                <input type="range" class="hsv-slider val-slider" id="v_min" min="0" max="255" value="100">
+                                <span class="slider-val mono" id="v_min_val">100</span>
+                            </div>
+                            <div class="slider-row">
+                                <label>V Max</label>
+                                <input type="range" class="hsv-slider val-slider" id="v_max" min="0" max="255" value="255">
+                                <span class="slider-val mono" id="v_max_val">255</span>
+                            </div>
+                        </div>
+                        <button class="btn btn-sm btn-ghost btn-block" id="btn-hsv-reset">Reset HSV Default</button>
+                    </div>
                 </div>
-                <div class="card-body">
-                    <div class="mode-switch">
-                        <button class="btn btn-mode active" id="btn-manual" data-mode="manual">Manual</button>
-                        <button class="btn btn-mode" id="btn-auto" data-mode="auto">Otomatis</button>
+
+                <!-- Card: kalibrasi komponen (di-generate dari spec) -->
+                <div class="card" id="card-calib-vision">
+                    <div class="card-header">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                        <h2>Deteksi (Vision)</h2>
                     </div>
-                    <div class="status-row">
-                        <span class="label">State:</span>
-                        <span class="value mono" id="brain-state">IDLE</span>
-                    </div>
-                    <div class="status-row">
-                        <span class="label">Durasi:</span>
-                        <span class="value mono" id="state-duration">0.0s</span>
-                    </div>
-                    <div class="status-row">
-                        <span class="label">Bola terkumpul:</span>
-                        <span class="value mono accent-green" id="balls-collected">0</span>
-                    </div>
+                    <div class="card-body calib-group" data-group="vision"></div>
                 </div>
+
+                <div class="card" id="card-calib-fsm">
+                    <div class="card-header">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+                        <h2>State Machine</h2>
+                    </div>
+                    <div class="card-body calib-group" data-group="fsm"></div>
+                </div>
+
+                <div class="card" id="card-calib-motor">
+                    <div class="card-header">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                        <h2>Motor & Steering</h2>
+                    </div>
+                    <div class="card-body calib-group" data-group="motor"></div>
+                </div>
+
+                <div class="card" id="card-calib-servo">
+                    <div class="card-header">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+                        <h2>Servo Collector</h2>
+                    </div>
+                    <div class="card-body calib-group" data-group="servo"></div>
+                </div>
+
+                <button class="btn btn-ghost btn-block" id="btn-calib-reset" style="margin-top:2px;">↺ Reset Semua Kalibrasi</button>
             </div>
 
-            <!-- Card: Kontrol Manual -->
-            <div class="card" id="card-controls">
-                <div class="card-header">
-                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5 12 2"/><line x1="12" y1="22" x2="12" y2="15.5"/><polyline points="22 8.5 12 15.5 2 8.5"/></svg>
-                    <h2>Kontrol Manual</h2>
-                </div>
-                <div class="card-body">
-                    <div class="control-grid">
-                        <div class="ctrl-spacer"></div>
-                        <button class="btn btn-ctrl" id="btn-fwd" data-cmd="forward" title="W — Maju">▲</button>
-                        <div class="ctrl-spacer"></div>
-                        <button class="btn btn-ctrl" id="btn-ccw" data-cmd="ccw" title="Q — Putar Kiri">↺</button>
-                        <button class="btn btn-ctrl btn-stop" id="btn-stop" data-cmd="stop" title="Space — Berhenti">■</button>
-                        <button class="btn btn-ctrl" id="btn-cw" data-cmd="cw" title="E — Putar Kanan">↻</button>
-                        <div class="ctrl-spacer"></div>
-                        <button class="btn btn-ctrl" id="btn-bwd" data-cmd="backward" title="S — Mundur">▼</button>
-                        <div class="ctrl-spacer"></div>
-                    </div>
-                    <div class="shortcut-hint">
-                        <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> Gerak &nbsp;
-                        <kbd>Q</kbd><kbd>E</kbd> Putar &nbsp;
-                        <kbd>Space</kbd> Stop &nbsp;
-                        <kbd>T</kbd> Mode
-                    </div>
-                    <div class="servo-controls">
-                        <button class="btn btn-sm btn-accent" id="btn-servo-open">Servo Buka</button>
-                        <button class="btn btn-sm btn-accent" id="btn-servo-close">Servo Tutup</button>
-                    </div>
-                </div>
-            </div>
+            <!-- ════════════════════════════════════════════════ -->
+            <!-- TAB: SENSOR                                       -->
+            <!-- ════════════════════════════════════════════════ -->
+            <div class="tab-content" id="tab-sensor">
 
-            <!-- Card: Info Deteksi -->
-            <div class="card" id="card-detection">
-                <div class="card-header">
-                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-                    <h2>Info Deteksi Bola</h2>
-                </div>
-                <div class="card-body telemetry-grid">
-                    <div class="tele-item">
-                        <span class="tele-label">Terdeteksi</span>
-                        <span class="tele-value" id="tele-detected">—</span>
+                <!-- Card: Model 3D robot (preview ringan, three.js lazy-load) -->
+                <div class="card" id="card-robot3d">
+                    <div class="card-header">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+                        <h2>Model 3D Robot</h2>
                     </div>
-                    <div class="tele-item">
-                        <span class="tele-label">Posisi X</span>
-                        <span class="tele-value mono" id="tele-ball-x">—</span>
-                    </div>
-                    <div class="tele-item">
-                        <span class="tele-label">Posisi Y</span>
-                        <span class="tele-value mono" id="tele-ball-y">—</span>
-                    </div>
-                    <div class="tele-item">
-                        <span class="tele-label">Area (px²)</span>
-                        <span class="tele-value mono" id="tele-ball-area">—</span>
-                    </div>
-                    <div class="tele-item">
-                        <span class="tele-label">Offset X</span>
-                        <span class="tele-value mono" id="tele-offset-x">—</span>
-                    </div>
-                    <div class="tele-item">
-                        <span class="tele-label">Offset Y</span>
-                        <span class="tele-value mono" id="tele-offset-y">—</span>
+                    <div class="card-body">
+                        <div class="robot3d-viewer" id="robot3d-viewer">
+                            <div class="robot3d-status" id="robot3d-status">Memuat model…</div>
+                        </div>
+                        <div class="robot3d-bar">
+                            <label class="robot3d-quality" title="Kerapatan triangle model — makin tinggi makin mulus tapi makin berat">
+                                <span>Kualitas</span>
+                                <select id="robot3d-quality">
+                                    <option value="low">Rendah · ringan</option>
+                                    <option value="med" selected>Sedang</option>
+                                    <option value="high">Tinggi · mulus</option>
+                                </select>
+                            </label>
+                            <span class="robot3d-hint">Seret putar · scroll zoom</span>
+                        </div>
                     </div>
                 </div>
-            </div>
 
-            <!-- Card: HSV Tuning -->
-            <div class="card" id="card-hsv">
-                <div class="card-header">
-                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><line x1="2" y1="12" x2="22" y2="12"/></svg>
-                    <h2>HSV Tuning</h2>
-                </div>
-                <div class="card-body">
-                    <div class="hsv-sliders">
-                        <div class="slider-row">
-                            <label>H Min</label>
-                            <input type="range" class="hsv-slider hue-slider" id="h_min" min="0" max="179" value="5">
-                            <span class="slider-val mono" id="h_min_val">5</span>
-                        </div>
-                        <div class="slider-row">
-                            <label>H Max</label>
-                            <input type="range" class="hsv-slider hue-slider" id="h_max" min="0" max="179" value="25">
-                            <span class="slider-val mono" id="h_max_val">25</span>
-                        </div>
-                        <div class="slider-row">
-                            <label>S Min</label>
-                            <input type="range" class="hsv-slider sat-slider" id="s_min" min="0" max="255" value="100">
-                            <span class="slider-val mono" id="s_min_val">100</span>
-                        </div>
-                        <div class="slider-row">
-                            <label>S Max</label>
-                            <input type="range" class="hsv-slider sat-slider" id="s_max" min="0" max="255" value="255">
-                            <span class="slider-val mono" id="s_max_val">255</span>
-                        </div>
-                        <div class="slider-row">
-                            <label>V Min</label>
-                            <input type="range" class="hsv-slider val-slider" id="v_min" min="0" max="255" value="100">
-                            <span class="slider-val mono" id="v_min_val">100</span>
-                        </div>
-                        <div class="slider-row">
-                            <label>V Max</label>
-                            <input type="range" class="hsv-slider val-slider" id="v_max" min="0" max="255" value="255">
-                            <span class="slider-val mono" id="v_max_val">255</span>
+                <!-- Card: IMU compass -->
+                <div class="card" id="card-imu">
+                    <div class="card-header">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg>
+                        <h2>IMU — Heading (MPU6050)</h2>
+                    </div>
+                    <div class="card-body imu-body">
+                        <svg class="compass" viewBox="0 0 120 120">
+                            <circle cx="60" cy="60" r="54" class="gauge-ring"/>
+                            <circle cx="60" cy="60" r="44" class="gauge-ring-inner"/>
+                            <!-- ticks -->
+                            <g class="compass-ticks" id="compass-ticks"></g>
+                            <text x="60" y="20" class="compass-card">N</text>
+                            <text x="104" y="64" class="compass-card">E</text>
+                            <text x="60" y="108" class="compass-card">S</text>
+                            <text x="16" y="64" class="compass-card">W</text>
+                            <g id="compass-needle">
+                                <polygon points="60,22 55,60 65,60" class="needle-n"/>
+                                <polygon points="60,98 55,60 65,60" class="needle-s"/>
+                            </g>
+                            <circle cx="60" cy="60" r="4" class="needle-hub"/>
+                        </svg>
+                        <div class="imu-readout">
+                            <span class="big-readout mono" id="imu-heading">0.0°</span>
+                            <span class="readout-sub" id="imu-dir">Utara</span>
                         </div>
                     </div>
-                    <div class="hsv-preview-wrapper">
-                        <img id="hsv-preview" src="/hsv_preview" alt="HSV Mask Preview">
-                    </div>
-                    <button class="btn btn-sm btn-ghost" id="btn-hsv-reset">Reset Default</button>
                 </div>
-            </div>
 
-            <!-- Card: Telemetri -->
-            <div class="card" id="card-telemetry">
-                <div class="card-header">
-                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-                    <h2>Telemetri</h2>
-                </div>
-                <div class="card-body telemetry-grid">
-                    <div class="tele-item">
-                        <span class="tele-label">Loop FPS</span>
-                        <span class="tele-value mono accent-blue" id="tele-fps">—</span>
+                <!-- Card: Daya & sinyal -->
+                <div class="card" id="card-power">
+                    <div class="card-header">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="6" width="18" height="12" rx="2" ry="2"/><line x1="23" y1="10" x2="23" y2="14"/></svg>
+                        <h2>Daya & Sinyal</h2>
                     </div>
-                    <div class="tele-item">
-                        <span class="tele-label">Stream FPS</span>
-                        <span class="tele-value mono accent-blue" id="tele-stream-fps">—</span>
-                    </div>
-                    <div class="tele-item">
-                        <span class="tele-label">CMD Vx</span>
-                        <span class="tele-value mono" id="tele-cmd-vx">0</span>
-                    </div>
-                    <div class="tele-item">
-                        <span class="tele-label">CMD Vy</span>
-                        <span class="tele-value mono" id="tele-cmd-vy">0</span>
-                    </div>
-                    <div class="tele-item">
-                        <span class="tele-label">CMD ω</span>
-                        <span class="tele-value mono" id="tele-cmd-omega">0</span>
+                    <div class="card-body">
+                        <div class="batt-row">
+                            <div class="batt-icon">
+                                <div class="batt-fill" id="batt-fill"></div>
+                                <span class="batt-nub"></span>
+                            </div>
+                            <div class="batt-info">
+                                <span class="big-readout mono" id="batt-volt">-- V</span>
+                                <span class="readout-sub" id="batt-pct">Baterai 2S</span>
+                            </div>
+                        </div>
+                        <div class="signal-row">
+                            <span class="label">RSSI WiFi</span>
+                            <div class="signal-bars" id="signal-bars">
+                                <span></span><span></span><span></span><span></span>
+                            </div>
+                            <span class="value mono" id="rssi-val">-- dBm</span>
+                        </div>
                     </div>
                 </div>
-            </div>
 
-            <!-- Card: Logging -->
-            <div class="card" id="card-logging">
-                <div class="card-header">
-                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
-                    <h2>Data Logging</h2>
+                <!-- Card: roda mecanum + command -->
+                <div class="card" id="card-wheels">
+                    <div class="card-header">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="2" x2="12" y2="22"/><line x1="2" y1="12" x2="22" y2="12"/></svg>
+                        <h2>Roda Mecanum & Command</h2>
+                    </div>
+                    <div class="card-body">
+                        <svg class="mecanum" viewBox="0 0 200 160" id="mecanum-svg">
+                            <!-- chassis -->
+                            <rect x="55" y="35" width="90" height="90" rx="10" class="chassis"/>
+                            <!-- translation vector -->
+                            <line x1="100" y1="80" x2="100" y2="80" id="drive-vec" class="drive-vec"/>
+                            <circle cx="100" cy="80" r="3" class="drive-hub"/>
+                            <!-- rotation indicator -->
+                            <path id="rot-arc" class="rot-arc" d=""/>
+                            <!-- wheels: FL FR RL RR -->
+                            <g id="wheel-fl" class="wheel"><rect x="22" y="28" width="26" height="40" rx="6"/><rect class="wfill" x="22" y="28" width="26" height="40" rx="6"/></g>
+                            <g id="wheel-fr" class="wheel"><rect x="152" y="28" width="26" height="40" rx="6"/><rect class="wfill" x="152" y="28" width="26" height="40" rx="6"/></g>
+                            <g id="wheel-rl" class="wheel"><rect x="22" y="92" width="26" height="40" rx="6"/><rect class="wfill" x="22" y="92" width="26" height="40" rx="6"/></g>
+                            <g id="wheel-rr" class="wheel"><rect x="152" y="92" width="26" height="40" rx="6"/><rect class="wfill" x="152" y="92" width="26" height="40" rx="6"/></g>
+                            <text x="35" y="52" class="wlabel" id="wt-fl">0</text>
+                            <text x="165" y="52" class="wlabel" id="wt-fr">0</text>
+                            <text x="35" y="116" class="wlabel" id="wt-rl">0</text>
+                            <text x="165" y="116" class="wlabel" id="wt-rr">0</text>
+                        </svg>
+                        <div class="cmd-readout">
+                            <div class="cmd-item"><span>Vx</span><b class="mono" id="cmd-vx">0</b></div>
+                            <div class="cmd-item"><span>Vy</span><b class="mono" id="cmd-vy">0</b></div>
+                            <div class="cmd-item"><span>ω</span><b class="mono" id="cmd-omega">0</b></div>
+                        </div>
+                    </div>
                 </div>
-                <div class="card-body">
-                    <div class="log-controls">
-                        <button class="btn btn-sm btn-record" id="btn-log-toggle">
-                            <span class="rec-dot" id="rec-dot"></span>
-                            <span id="btn-log-text">Mulai Recording</span>
-                        </button>
+
+                <!-- Card: radar posisi bola -->
+                <div class="card" id="card-radar">
+                    <div class="card-header">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
+                        <h2>Radar Posisi Bola</h2>
                     </div>
-                    <div class="status-row">
-                        <span class="label">File:</span>
-                        <span class="value mono" id="log-filename">—</span>
+                    <div class="card-body">
+                        <svg class="radar" viewBox="0 0 200 150" id="radar-svg">
+                            <rect x="2" y="2" width="196" height="146" rx="6" class="radar-frame"/>
+                            <line x1="100" y1="2" x2="100" y2="148" class="radar-cross"/>
+                            <line x1="2" y1="75" x2="198" y2="75" class="radar-cross"/>
+                            <line x1="100" y1="75" x2="100" y2="75" id="radar-vec" class="radar-vec"/>
+                            <circle cx="100" cy="75" id="radar-ball" class="radar-ball" r="0"/>
+                        </svg>
+                        <div class="telemetry-grid" style="margin-top:12px;">
+                            <div class="tele-item">
+                                <span class="tele-label">Terdeteksi</span>
+                                <span class="tele-value" id="tele-detected">—</span>
+                            </div>
+                            <div class="tele-item">
+                                <span class="tele-label">Area (px²)</span>
+                                <span class="tele-value mono" id="tele-ball-area">—</span>
+                            </div>
+                            <div class="tele-item">
+                                <span class="tele-label">Offset X</span>
+                                <span class="tele-value mono" id="tele-offset-x">—</span>
+                            </div>
+                            <div class="tele-item">
+                                <span class="tele-label">Offset Y</span>
+                                <span class="tele-value mono" id="tele-offset-y">—</span>
+                            </div>
+                        </div>
                     </div>
-                    <div class="status-row">
-                        <span class="label">Entri:</span>
-                        <span class="value mono" id="log-entries">0</span>
+                </div>
+
+                <!-- Card: telemetri sistem -->
+                <div class="card" id="card-telemetry">
+                    <div class="card-header">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                        <h2>Telemetri Sistem</h2>
                     </div>
-                    <div class="status-row">
-                        <span class="label">Durasi:</span>
-                        <span class="value mono" id="log-elapsed">0s</span>
+                    <div class="card-body telemetry-grid">
+                        <div class="tele-item">
+                            <span class="tele-label">Loop FPS</span>
+                            <span class="tele-value mono accent-blue" id="tele-fps">—</span>
+                        </div>
+                        <div class="tele-item">
+                            <span class="tele-label">Stream FPS</span>
+                            <span class="tele-value mono accent-blue" id="tele-stream-fps">—</span>
+                        </div>
+                        <div class="tele-item">
+                            <span class="tele-label">Pos X</span>
+                            <span class="tele-value mono" id="tele-ball-x">—</span>
+                        </div>
+                        <div class="tele-item">
+                            <span class="tele-label">Pos Y</span>
+                            <span class="tele-value mono" id="tele-ball-y">—</span>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -288,13 +567,35 @@
         </aside>
     </main>
 
-    <!-- ═══════════════════════════════════════════════════════ -->
-    <!-- Toast Container                                         -->
-    <!-- ═══════════════════════════════════════════════════════ -->
+    <!-- Toast Container -->
     <div id="toast-container"></div>
 
-    <!-- SocketIO + Custom JS -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
-    <script src="/static/js/app.js"></script>
+    <!-- SocketIO (lokal — tidak bergantung CDN) + Custom JS -->
+    <script src="/static/js/socket.io.min.js"></script>
+    <script src="/static/js/app.js?v=4"></script>
+
+    <!-- Lazy-load viewer 3D: three.js (~670KB) BARU di-download saat user
+         pertama kali membuka tab Sensor. Dashboard tetap ringan utk yg tak
+         butuh preview. -->
+    <script type="module">
+        const el = document.getElementById('robot3d-viewer');
+        let loaded = false;
+        function loadViewer() {
+            if (loaded || !el) return;
+            loaded = true;
+            import('/static/js/robot-viewer.js?v=3')
+                .then(m => m.initRobotViewer(el))
+                .catch(err => {
+                    console.error('[robot-viewer] gagal load module:', err);
+                    const s = el.querySelector('.robot3d-status');
+                    if (s) { s.textContent = 'Gagal memuat viewer 3D'; s.classList.add('is-error'); }
+                });
+        }
+        // Trigger saat tab Sensor diklik — andal, tak bergantung viewport.
+        const sensorBtn = document.querySelector('.tab-btn[data-tab="sensor"]');
+        if (sensorBtn) sensorBtn.addEventListener('click', loadViewer);
+        // Bila tab Sensor sudah aktif saat halaman dibuka.
+        if (document.getElementById('tab-sensor')?.classList.contains('active')) loadViewer();
+    </script>
 </body>
 </html>

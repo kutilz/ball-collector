@@ -35,6 +35,9 @@ logs/
 ground-station/logs/
 *.csv
 
+# Ground Station uploaded test videos
+ground-station/uploads/
+
 # OS generated files
 .DS_Store
 .DS_Store?
