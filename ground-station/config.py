@@ -49,6 +49,29 @@ FRAME_WIDTH = 640
 FRAME_HEIGHT = 480
 
 # ═══════════════════════════════════════════════════════════════
+# Detektor Bola — pilih backend deteksi (bisa diganti live dari UI)
+# ═══════════════════════════════════════════════════════════════
+#   "hsv"  → segmentasi warna HSV (ringan, default, tanpa dependensi berat)
+#   "yolo" → deteksi objek berbasis machine learning (YOLOv8, butuh ultralytics)
+# Backend bisa dialihkan runtime lewat event 'set_detector'; nilai ini hanya
+# menentukan mode awal saat ground station start.
+DETECTOR_BACKEND = "hsv"
+
+# Konfigurasi YOLO — dipakai hanya saat backend "yolo" aktif.
+#   YOLO_MODEL   : path file bobot .pt. Nama model resmi (mis. "yolov8n.pt")
+#                  otomatis diunduh Ultralytics saat pertama dipakai. Ganti ke
+#                  path model kustom hasil latih (Colab) bila sudah ada.
+#   YOLO_CONF    : ambang confidence minimum (0–1). Bisa di-tune live dari UI.
+#   YOLO_IMGSZ   : ukuran sisi inferensi (kecil = lebih cepat, sedikit kurang teliti).
+#   YOLO_CLASSES : filter indeks kelas yang dianggap "bola". [32] = "sports ball"
+#                  pada model COCO pretrained. Kosongkan ([]) untuk model kustom
+#                  1-kelas (terima semua deteksi).
+YOLO_MODEL = "yolov8n.pt"
+YOLO_CONF = 0.35
+YOLO_IMGSZ = 416
+YOLO_CLASSES = [32]
+
+# ═══════════════════════════════════════════════════════════════
 # HSV Default — Rentang warna bola ping-pong oranye
 # ═══════════════════════════════════════════════════════════════
 HSV_DEFAULTS = {
@@ -127,6 +150,7 @@ CALIBRATION_SPEC = {
     "MIN_CONTOUR_AREA": (10, 2000, 10, "Area Min Kontur"),
     "ERODE_ITER":       (0, 5, 1, "Iterasi Erode"),
     "DILATE_ITER":      (0, 5, 1, "Iterasi Dilate"),
+    "YOLO_CONF":        (0.05, 0.95, 0.05, "Confidence AI"),
     # State machine
     "AREA_APPROACH":    (100, 5000, 50, "Area → APPROACH"),
     "AREA_COLLECT":     (1000, 40000, 500, "Area → COLLECT"),
@@ -147,7 +171,7 @@ CALIBRATION_SPEC = {
 }
 
 # Param yang bertipe float (selain itu di-cast ke int saat update)
-_FLOAT_PARAMS = {"KP_STEERING", "SWEEP_DELAY", "MOTION_HEARTBEAT"}
+_FLOAT_PARAMS = {"KP_STEERING", "SWEEP_DELAY", "MOTION_HEARTBEAT", "YOLO_CONF"}
 
 
 def get_calibration():

@@ -218,6 +218,7 @@ def handle_connect(auth=None):
     emit("init_state", {
         "hsv": vision.get_hsv_values(),
         "hsv_defaults": config.HSV_DEFAULTS,
+        "detector": vision.get_backend_info(),
         "brain": brain.get_status(),
         "comms": comms.get_status(),
         "log": logger.get_log_info(),
@@ -313,6 +314,21 @@ def handle_update_hsv(data):
         data.get("v_max", vision.v_max),
     )
     emit("hsv_updated", vision.get_hsv_values())
+
+
+@socketio.on("set_detector")
+def handle_set_detector(data):
+    """
+    Alihkan backend deteksi bola (hsv / yolo) saat runtime.
+
+    Untuk YOLO, model bisa perlu waktu memuat (dan mengunduh bobot saat
+    pertama kali). Bila gagal, backend tetap di nilai lama dan info error
+    dikirim balik agar UI menampilkannya. Hasil di-broadcast supaya semua
+    client yang terbuka ikut sinkron.
+    """
+    backend = data.get("backend", "hsv")
+    result = vision.set_backend(backend)
+    socketio.emit("detector_state", {**result, "info": vision.get_backend_info()})
 
 
 def _ack_detail(status):
@@ -478,6 +494,7 @@ def _main_loop():
             "balls_collected": brain_status["balls_collected"],
             "state_duration": brain_status["state_duration"],
             "detected": detection.get("detected", False),
+            "detector": vision.backend,
             "ball_x": detection.get("cx", 0),
             "ball_y": detection.get("cy", 0),
             "ball_area": round(detection.get("area", 0), 1),

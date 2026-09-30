@@ -301,6 +301,21 @@
             <!-- ════════════════════════════════════════════════ -->
             <div class="tab-content" id="tab-kalibrasi">
 
+                <!-- Card: Pemilih detektor bola (HSV vs AI/YOLO) -->
+                <div class="card" id="card-detector">
+                    <div class="card-header">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>
+                        <h2>Detektor Bola</h2>
+                    </div>
+                    <div class="card-body">
+                        <div class="segmented" id="detector-seg">
+                            <button class="seg-btn active" data-detector="hsv">HSV — Warna</button>
+                            <button class="seg-btn" data-detector="yolo">AI — YOLO</button>
+                        </div>
+                        <div class="detector-status" id="detector-status">Mode warna HSV aktif — atur rentang warna di bawah.</div>
+                    </div>
+                </div>
+
                 <!-- Card: HSV Tuning -->
                 <div class="card" id="card-hsv">
                     <div class="card-header">

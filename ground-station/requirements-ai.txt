@@ -1,0 +1,12 @@
+# ─────────────────────────────────────────────────────────────
+# Dependensi OPSIONAL untuk backend deteksi AI (YOLOv8).
+# Hanya perlu dipasang bila ingin memakai mode "AI — YOLO" di UI.
+# Backend HSV default TIDAK butuh paket ini.
+#
+#   pip install -r requirements-ai.txt
+#
+# Catatan: ultralytics menarik PyTorch (torch) yang berukuran besar.
+# Untuk CPU-only cukup instalasi default. Untuk GPU (CUDA), ikuti
+# panduan PyTorch (https://pytorch.org) memilih wheel yang sesuai.
+# ─────────────────────────────────────────────────────────────
+ultralytics>=8.0.0

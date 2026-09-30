@@ -387,6 +387,16 @@ body {
     margin-top: 6px;
 }
 
+/* Status detektor bola (HSV vs AI/YOLO) */
+.detector-status {
+    font-size: 0.74rem;
+    color: var(--text-muted);
+    line-height: 1.4;
+    margin-top: 8px;
+}
+.detector-status.is-error { color: var(--accent-coral); }
+.detector-status.is-ai { color: var(--accent-blue); }
+
 /* ── Status Row ──────────────────────────────────────────── */
 .status-row {
     display: flex;

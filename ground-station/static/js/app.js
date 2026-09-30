@@ -27,13 +27,13 @@ let keysPressed = new Set();
 
 // Kelompok kalibrasi → urutan key di tiap kartu
 const CALIB_GROUPS = {
-    vision: ["MIN_CONTOUR_AREA", "ERODE_ITER", "DILATE_ITER"],
+    vision: ["MIN_CONTOUR_AREA", "ERODE_ITER", "DILATE_ITER", "YOLO_CONF"],
     fsm:    ["AREA_APPROACH", "AREA_COLLECT", "CENTER_TOLERANCE"],
     motor:  ["SEARCH_SPEED", "APPROACH_SPEED", "MANUAL_SPEED", "MANUAL_TURN", "KP_STEERING",
              "SAFETY_MAX_PWM", "MOTION_HEARTBEAT"],
     servo:  ["SERVO_OPEN", "SERVO_CLOSE", "SWEEP_DELAY"],
 };
-const FLOAT_KEYS = new Set(["KP_STEERING", "SWEEP_DELAY", "MOTION_HEARTBEAT"]);
+const FLOAT_KEYS = new Set(["KP_STEERING", "SWEEP_DELAY", "MOTION_HEARTBEAT", "YOLO_CONF"]);
 
 // ═══════════════════════════════════════════════════════════════
 // Referensi DOM
@@ -76,6 +76,8 @@ const el = {
     // Sensor: mecanum
     driveVec: $("drive-vec"), rotArc: $("rot-arc"),
     cmdVx: $("cmd-vx"), cmdVy: $("cmd-vy"), cmdOmega: $("cmd-omega"),
+    // Detektor bola (HSV vs AI/YOLO)
+    detectorSeg: $("detector-seg"), detectorStatus: $("detector-status"),
     // HSV
     hMin: $("h_min"), hMax: $("h_max"), sMin: $("s_min"), sMax: $("s_max"), vMin: $("v_min"), vMax: $("v_max"),
     btnHsvReset: $("btn-hsv-reset"),
@@ -153,6 +155,7 @@ socket.on("disconnect", () => {
 socket.on("init_state", (data) => {
     if (data.hsv) setSliderValues(data.hsv);
     if (data.hsv_defaults) hsvDefaults = data.hsv_defaults;
+    if (data.detector) applyDetectorState(data.detector);
     isAutoMode = data.auto_mode || false;
     updateModeUI();
     if (data.comms) {
@@ -220,6 +223,17 @@ socket.on("drive_status", (status) => {
 });
 
 socket.on("hsv_updated", (data) => setSliderValues(data));
+
+// Hasil pengalihan backend detektor (broadcast ke semua client).
+socket.on("detector_state", (data) => {
+    applyDetectorState(data.info);
+    if (data.ok) {
+        showToast(data.info.backend === "yolo"
+            ? "Detektor AI (YOLO) aktif" : "Detektor HSV aktif", "success");
+    } else {
+        showToast(data.error || "Gagal mengaktifkan detektor AI", "error");
+    }
+});
 
 socket.on("mode_changed", (data) => {
     isAutoMode = data.auto_mode;
@@ -383,6 +397,36 @@ function setSliderValues(hsv) {
      ["s_max", hsv.s_max], ["v_min", hsv.v_min], ["v_max", hsv.v_max]].forEach(([id, v]) => {
         $(id).value = v; $(id + "_val").textContent = v;
     });
+}
+
+// ═══════════════════════════════════════════════════════════════
+// DETEKTOR BOLA — pilih backend HSV vs AI (YOLO)
+// ═══════════════════════════════════════════════════════════════
+// Sorot tombol segmented sesuai backend aktif.
+function highlightDetector(backend) {
+    if (!el.detectorSeg) return;
+    el.detectorSeg.querySelectorAll(".seg-btn").forEach(b =>
+        b.classList.toggle("active", b.dataset.detector === backend));
+}
+
+// Terapkan info backend dari server ke UI (tombol + baris status).
+// info: {backend, yolo_ready, yolo_model, yolo_error}
+function applyDetectorState(info) {
+    if (!info) return;
+    highlightDetector(info.backend);
+    const st = el.detectorStatus;
+    if (!st) return;
+    st.classList.remove("is-error", "is-ai");
+    if (info.yolo_error) {
+        st.textContent = "AI tidak tersedia: " + info.yolo_error;
+        st.classList.add("is-error");
+    } else if (info.backend === "yolo") {
+        st.textContent = `Mode AI aktif — model ${info.yolo_model || "YOLO"}. `
+            + `Atur ambang di slider "Confidence AI".`;
+        st.classList.add("is-ai");
+    } else {
+        st.textContent = "Mode warna HSV aktif — atur rentang warna di bawah.";
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -709,6 +753,23 @@ el.btnHsvReset.addEventListener("click", () => {
     setSliderValues(hsvDefaults);
     showToast("HSV direset ke default", "info");
 });
+
+// ── Pemilih detektor bola (HSV vs AI/YOLO) ──────────────────────
+if (el.detectorSeg) {
+    el.detectorSeg.querySelectorAll(".seg-btn").forEach(btn => {
+        btn.addEventListener("click", () => {
+            const backend = btn.dataset.detector;
+            highlightDetector(backend);   // optimistik; server konfirmasi via detector_state
+            if (backend === "yolo" && el.detectorStatus) {
+                el.detectorStatus.classList.remove("is-error");
+                el.detectorStatus.classList.add("is-ai");
+                el.detectorStatus.textContent =
+                    "Memuat model AI… (unduhan bobot bisa makan waktu saat pertama kali)";
+            }
+            socket.emit("set_detector", { backend });
+        });
+    });
+}
 
 el.btnCalibReset.addEventListener("click", () => socket.emit("reset_calibration", {}));
 

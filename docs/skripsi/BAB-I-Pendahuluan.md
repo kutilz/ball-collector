@@ -191,5 +191,5 @@ Penulisan skripsi ini disusun dalam lima bab dengan sistematika sebagai berikut:
   pengujian.
 - **BAB IV Hasil dan Pembahasan**, memuat hasil implementasi, hasil pengujian
   tiap subsistem dan sistem terintegrasi, serta pembahasannya.
-- **BAB V Penutup**, memuat kesimpulan yang menjawab rumusan masalah dan saran
-  untuk pengembangan selanjutnya.
+- **BAB V Simpulan dan Saran**, memuat simpulan yang menjawab rumusan masalah
+  dan saran untuk pengembangan selanjutnya.

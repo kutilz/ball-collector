@@ -1,0 +1,1069 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Slide Sidang — Robot Pengumpul Bola</title>
+<!--
+  DRAF SLIDE SIDANG SKRIPSI — Robot Pengumpul Bola (HSV + Mecanum)
+  Cara pakai:
+    ← / →  atau  Spasi / PageUp-Down  : pindah slide
+    F   : layar penuh (fullscreen)
+    Ctrl+P : cetak / simpan sebagai PDF (semua slide, 1 halaman/slide)
+    Klik di layar : maju
+  Konvensi isi:
+    ⟨…⟩          = slot ANGKA hasil pengujian → isi setelah uji (jangan dikarang)
+    [Foto: …]    = tempel gambar/foto milikmu di sini
+    (opsional)   = slide/butir yang boleh dibuang saat bimbingan
+-->
+<style>
+  :root{
+    --ink:#0F1E2E;        /* navy blueprint */
+    --ink-2:#16293C;
+    --paper:#F4F6F9;      /* cool near-white */
+    --panel:#FFFFFF;
+    --accent:#FF6A13;     /* ping-pong orange */
+    --accent-deep:#E24E00;
+    --steel:#3D6B99;      /* diagram steel-blue */
+    --steel-soft:#E4ECF4;
+    --text:#17242F;
+    --muted:#5E6E7C;
+    --line:#D8E0E8;
+    --line-strong:#B9C6D3;
+    --ok:#2E9E6B;
+    --sans:"Segoe UI",system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif;
+    --mono:"Cascadia Code","Consolas","SFMono-Regular",ui-monospace,Menlo,monospace;
+  }
+
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:#0A121B;
+    font-family:var(--sans);
+    color:var(--text);
+    overflow:hidden;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  /* ── Panggung 16:9 yang di-scale ke layar ───────────────────── */
+  .stage{
+    position:fixed; left:50%; top:50%;
+    width:1280px; height:720px;
+    transform-origin:center center;
+    background:var(--paper);
+    box-shadow:0 40px 120px rgba(0,0,0,.55);
+    overflow:hidden;
+  }
+
+  .slide{
+    position:absolute; inset:0;
+    padding:60px 72px 74px;
+    display:flex; flex-direction:column;
+    opacity:0; visibility:hidden;
+    transition:opacity .38s ease;
+  }
+  .slide.is-active{opacity:1; visibility:visible}
+  .slide.is-active .rise{animation:rise .5s cubic-bezier(.2,.7,.2,1) both}
+  @keyframes rise{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+  @media (prefers-reduced-motion:reduce){
+    .slide{transition:none}
+    .slide.is-active .rise{animation:none}
+  }
+
+  /* ── Elemen umum ─────────────────────────────────────────────── */
+  .eyebrow{
+    font-family:var(--mono); font-size:14px; font-weight:600;
+    letter-spacing:.20em; text-transform:uppercase; color:var(--steel);
+    display:flex; align-items:center; gap:12px; margin-bottom:18px;
+  }
+  .eyebrow::before{content:""; width:26px; height:2px; background:var(--accent)}
+
+  h1.headline{
+    font-size:41px; line-height:1.1; font-weight:700; color:var(--ink);
+    margin:0 0 8px; letter-spacing:-.01em; text-wrap:balance; max-width:20ch;
+  }
+  .lead{font-size:21px; line-height:1.5; color:var(--muted); max-width:60ch; margin:6px 0 0}
+  .content{margin-top:26px; flex:1; min-height:0}
+
+  ul.bullets{list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:15px}
+  ul.bullets li{position:relative; padding-left:30px; font-size:20px; line-height:1.42; max-width:64ch}
+  ul.bullets li::before{
+    content:""; position:absolute; left:2px; top:9px; width:12px; height:12px; border-radius:50%;
+    background:radial-gradient(circle at 34% 32%, #FFB27A 0 18%, var(--accent) 42%, var(--accent-deep) 100%);
+    box-shadow:0 1px 2px rgba(226,78,0,.35);
+  }
+  ul.bullets li strong{color:var(--ink); font-weight:600}
+  ul.bullets.tight li{font-size:18px; gap:10px}
+  .sub{color:var(--muted); font-size:16px}
+
+  .cols{display:grid; grid-template-columns:1fr 1fr; gap:30px; height:100%}
+  .cols-3{display:grid; grid-template-columns:repeat(3,1fr); gap:20px}
+  .col-head{font-family:var(--mono); font-size:13px; letter-spacing:.14em; text-transform:uppercase;
+    color:var(--steel); margin:0 0 12px; padding-bottom:8px; border-bottom:1px solid var(--line)}
+
+  .panel{background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:22px 24px}
+  .panel h3{margin:0 0 10px; font-size:19px; color:var(--ink)}
+  .panel p{margin:0; font-size:17px; line-height:1.45; color:var(--muted)}
+
+  /* chips / tags */
+  .tag{display:inline-block; font-family:var(--mono); font-size:13px; padding:4px 10px; border-radius:999px;
+    background:var(--steel-soft); color:var(--steel); border:1px solid #CBDAE8; white-space:nowrap}
+  .tag.orange{background:#FFE9DC; color:var(--accent-deep); border-color:#FFD2BA}
+
+  /* metric */
+  .metrics{display:flex; gap:24px; flex-wrap:wrap}
+  .metric{flex:1; min-width:150px; background:var(--panel); border:1px solid var(--line);
+    border-radius:10px; padding:18px 20px}
+  .metric .num{font-family:var(--mono); font-size:34px; font-weight:700; color:var(--ink); line-height:1}
+  .metric .num.fill{color:var(--accent)}
+  .metric .lab{margin-top:8px; font-size:14px; color:var(--muted); line-height:1.3}
+
+  /* table */
+  table.tbl{width:100%; border-collapse:collapse; font-size:17px}
+  table.tbl caption{caption-side:top; text-align:left; font-family:var(--mono); font-size:13px;
+    letter-spacing:.06em; color:var(--steel); padding-bottom:10px}
+  table.tbl th,table.tbl td{padding:10px 14px; text-align:left; border-bottom:1px solid var(--line)}
+  table.tbl thead th{background:var(--ink); color:#EAF1F8; font-weight:600; font-size:14px;
+    letter-spacing:.02em; border-bottom:none}
+  table.tbl thead th:first-child{border-top-left-radius:8px}
+  table.tbl thead th:last-child{border-top-right-radius:8px}
+  table.tbl td.c,table.tbl th.c{text-align:center; font-variant-numeric:tabular-nums; font-family:var(--mono)}
+  table.tbl tbody tr:nth-child(even){background:#EEF2F6}
+  .fill-cell{color:var(--accent); font-weight:700}
+
+  /* placeholder box for figures/photos/charts */
+  .ph{border:2px dashed var(--line-strong); border-radius:10px; display:flex; align-items:center;
+    justify-content:center; text-align:center; color:var(--muted); font-family:var(--mono); font-size:15px;
+    background:
+      repeating-linear-gradient(45deg, transparent 0 16px, rgba(61,107,153,.045) 16px 17px);
+    padding:18px; height:100%; min-height:120px; line-height:1.5}
+  .ph b{color:var(--steel); font-weight:600}
+
+  /* diagram: architecture nodes */
+  .arch{display:flex; align-items:center; justify-content:center; gap:0; height:100%}
+  .node{background:var(--panel); border:1.5px solid var(--line-strong); border-radius:12px; padding:18px 20px;
+    text-align:center; width:220px; box-shadow:0 6px 18px rgba(15,30,46,.06)}
+  .node .role{font-family:var(--mono); font-size:12px; letter-spacing:.1em; text-transform:uppercase; color:var(--steel)}
+  .node .name{font-size:20px; font-weight:700; color:var(--ink); margin:6px 0 4px}
+  .node .desc{font-size:13px; color:var(--muted); line-height:1.35}
+  .node.hi{border-color:var(--accent); box-shadow:0 6px 22px rgba(255,106,19,.18)}
+  .link{display:flex; flex-direction:column; align-items:center; color:var(--steel); padding:0 6px; min-width:96px}
+  .link .lab{font-family:var(--mono); font-size:12px; color:var(--steel); margin-bottom:3px}
+  .link .arrow{font-size:22px; color:var(--accent); line-height:1}
+  .link .sub{font-size:11px; color:var(--muted); margin-top:2px}
+
+  /* diagram: FSM pipeline */
+  .pipe{display:flex; align-items:stretch; gap:0; margin-top:8px}
+  .state{flex:1; background:var(--panel); border:1.5px solid var(--line-strong); border-top:3px solid var(--steel);
+    border-radius:8px; padding:16px 14px; text-align:center}
+  .state .s-name{font-family:var(--mono); font-weight:700; font-size:18px; color:var(--ink); letter-spacing:.02em}
+  .state .s-do{font-size:13px; color:var(--muted); margin-top:8px; line-height:1.35}
+  .state.collect{border-top-color:var(--accent)}
+  .p-arrow{display:flex; align-items:center; color:var(--accent); font-size:26px; padding:0 10px; font-weight:700}
+
+  /* horizontal step row (detection pipeline) */
+  .steps{display:flex; align-items:center; flex-wrap:wrap; gap:8px 4px; margin-top:6px}
+  .step{background:var(--steel-soft); border:1px solid #CBDAE8; color:var(--ink); border-radius:7px;
+    padding:9px 12px; font-size:14px; font-family:var(--mono)}
+  .step.acc{background:#FFE9DC; border-color:#FFD2BA; color:var(--accent-deep)}
+  .steps .sep{color:var(--accent); font-weight:700}
+
+  /* two-line note */
+  .note{margin-top:14px; font-size:14px; color:var(--muted); font-style:italic}
+  .opt{display:inline-block; font-family:var(--mono); font-size:11px; letter-spacing:.08em; text-transform:uppercase;
+    color:#9A7B00; background:#FFF4CC; border:1px solid #F0DE9A; border-radius:5px; padding:2px 7px; margin-left:8px; vertical-align:middle}
+
+  /* ── DIVIDER slides (navy) ───────────────────────────────────── */
+  .slide.divider{background:var(--ink); color:#EAF1F8; justify-content:center;
+    background-image:
+      radial-gradient(120% 120% at 88% 12%, rgba(255,106,19,.14) 0, transparent 42%),
+      repeating-linear-gradient(45deg, rgba(255,255,255,.028) 0 22px, transparent 22px 44px);}
+  .divider .d-num{font-family:var(--mono); font-size:120px; font-weight:700; color:rgba(255,106,19,.9); line-height:.9; letter-spacing:-.03em}
+  .divider .d-kick{font-family:var(--mono); letter-spacing:.24em; text-transform:uppercase; color:#7FA0BE; font-size:15px; margin:22px 0 10px}
+  .divider .d-title{font-size:52px; font-weight:700; color:#fff; margin:0; letter-spacing:-.01em; max-width:18ch; text-wrap:balance}
+  .divider .d-list{margin-top:22px; color:#AFC1D2; font-size:17px; display:flex; gap:22px; flex-wrap:wrap}
+  .divider .d-list span{display:flex; align-items:center; gap:8px}
+  .divider .d-list span::before{content:""; width:8px; height:8px; border-radius:50%; background:var(--accent)}
+
+  /* ── TITLE slide ─────────────────────────────────────────────── */
+  .slide.title{background:var(--ink); color:#EAF1F8; padding:0;
+    background-image:
+      radial-gradient(90% 110% at 92% 8%, rgba(255,106,19,.18) 0, transparent 46%),
+      repeating-linear-gradient(45deg, rgba(255,255,255,.03) 0 24px, transparent 24px 48px);}
+  .title-wrap{position:absolute; inset:0; padding:64px 72px; display:flex; flex-direction:column; justify-content:space-between}
+  .title .brand{display:flex; align-items:center; gap:13px; font-family:var(--mono); letter-spacing:.14em;
+    text-transform:uppercase; font-size:14px; color:#8FADC8}
+  .ball{width:22px; height:22px; border-radius:50%;
+    background:radial-gradient(circle at 34% 30%, #FFC79E 0 16%, var(--accent) 44%, var(--accent-deep) 100%);
+    box-shadow:0 3px 10px rgba(255,106,19,.5); flex:none}
+  .ball.sm{width:13px; height:13px}
+  .title .kicker{font-family:var(--mono); color:var(--accent); letter-spacing:.16em; text-transform:uppercase;
+    font-size:15px; margin-bottom:18px}
+  .title h1{font-size:47px; line-height:1.14; font-weight:700; color:#fff; margin:0; max-width:24ch; letter-spacing:-.015em; text-wrap:balance}
+  .title h1 em{color:var(--accent); font-style:normal}
+  .title .rule{width:64px; height:3px; background:var(--accent); margin:26px 0}
+  .title .who{display:flex; gap:56px; flex-wrap:wrap}
+  .title .who .lab{font-family:var(--mono); font-size:12px; letter-spacing:.12em; text-transform:uppercase; color:#7C9BB8; margin-bottom:5px}
+  .title .who .val{font-size:19px; color:#EAF1F8}
+  .title .foot{display:flex; justify-content:space-between; align-items:flex-end; color:#8FADC8; font-size:14px}
+  .title .foot .hint{font-family:var(--mono); font-size:12px; color:#6E8AA6}
+  .title .foot .hint kbd{background:#1E344A; border:1px solid #2C4763; border-radius:4px; padding:1px 6px; color:#B9CDE0; font-size:11px}
+
+  /* closing */
+  .slide.closing{background:var(--ink); color:#EAF1F8; align-items:flex-start; justify-content:center;
+    background-image:
+      radial-gradient(80% 90% at 85% 85%, rgba(255,106,19,.16) 0, transparent 50%),
+      repeating-linear-gradient(45deg, rgba(255,255,255,.028) 0 24px, transparent 24px 48px);}
+  .closing .big{font-size:60px; font-weight:700; color:#fff; margin:0; letter-spacing:-.02em}
+  .closing .qa{font-family:var(--mono); color:var(--accent); letter-spacing:.2em; text-transform:uppercase; font-size:16px; margin-top:14px}
+  .closing .sig{margin-top:30px; color:#AFC1D2; font-size:18px; line-height:1.6}
+
+  /* ── chrome (footer, progress, nav) ─────────────────────────── */
+  .chrome{position:absolute; left:0; right:0; bottom:0; height:46px; padding:0 72px;
+    display:flex; align-items:center; justify-content:space-between; pointer-events:none}
+  .chrome .brandmark{display:flex; align-items:center; gap:9px; font-family:var(--mono); font-size:12px;
+    letter-spacing:.1em; text-transform:uppercase; color:var(--muted)}
+  .chrome .counter{font-family:var(--mono); font-size:13px; color:var(--muted); font-variant-numeric:tabular-nums}
+  .chrome{transition:opacity .3s ease}
+  .progress{position:absolute; left:0; bottom:0; height:4px; background:var(--accent); width:0;
+    transition:width .38s ease}
+  .navbtns{position:absolute; right:16px; bottom:52px; display:flex; gap:8px; z-index:5}
+  .navbtns button{pointer-events:auto; width:34px; height:34px; border-radius:8px; border:1px solid var(--line-strong);
+    background:rgba(255,255,255,.9); color:var(--ink); font-size:16px; cursor:pointer; line-height:1}
+  .navbtns button:hover{border-color:var(--accent); color:var(--accent-deep)}
+  .navbtns button:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+  .dark-chrome .brandmark,.dark-chrome .counter{color:#8FADC8}
+
+  /* ── print → PDF (1 slide per halaman) ──────────────────────── */
+  @media print{
+    @page{size:1280px 720px; margin:0}
+    body{overflow:visible; background:#fff}
+    .stage{position:static; transform:none!important; width:1280px; height:auto; box-shadow:none}
+    .slide{position:relative; inset:auto; opacity:1!important; visibility:visible!important;
+      width:1280px; height:720px; page-break-after:always; break-after:page}
+    .slide.is-active .rise{animation:none}
+    .navbtns{display:none}
+    .chrome{position:absolute}
+  }
+</style>
+</head>
+<body>
+<div class="stage" id="stage">
+
+  <!-- 1 · TITLE ------------------------------------------------->
+  <section class="slide title">
+    <div class="title-wrap">
+      <div class="brand"><span class="ball"></span> Universitas Pendidikan Indonesia · 2026</div>
+      <div>
+        <div class="kicker">Skripsi · Sidang Akhir</div>
+        <h1>Implementasi <em>Computer Vision</em> dan Kinematika Roda Mecanum pada Otomasi Robot Pengumpul Bola</h1>
+        <div class="rule"></div>
+        <div class="who">
+          <div>
+            <div class="lab">Penyusun</div>
+            <div class="val">Muhammad Maulana · NIM ⟨…⟩</div>
+          </div>
+          <div>
+            <div class="lab">Program Studi</div>
+            <div class="val">Pend. Teknik Otomasi Industri &amp; Robotika</div>
+          </div>
+          <div>
+            <div class="lab">Pembimbing</div>
+            <div class="val">⟨Pembimbing I⟩ · ⟨Pembimbing II⟩</div>
+          </div>
+        </div>
+      </div>
+      <div class="foot">
+        <div>Departemen Pendidikan Teknik Elektro · FPTK UPI</div>
+        <div class="hint"><kbd>←</kbd> <kbd>→</kbd> navigasi · <kbd>F</kbd> layar penuh · <kbd>Ctrl</kbd>+<kbd>P</kbd> ke PDF</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 2 · AGENDA ------------------------------------------------->
+  <section class="slide">
+    <div class="eyebrow">Agenda</div>
+    <h1 class="headline rise">Alur Presentasi</h1>
+    <div class="content rise">
+      <div class="cols-3" style="gap:18px">
+        <div class="panel"><div class="tag">01 · Pendahuluan</div><p style="margin-top:12px">Latar belakang, celah penelitian, rumusan masalah, tujuan, batasan.</p></div>
+        <div class="panel"><div class="tag">02 · Tinjauan Pustaka</div><p style="margin-top:12px">Penelitian terdahulu &amp; landasan teori: HSV, YOLOv8, Mecanum, IMU.</p></div>
+        <div class="panel"><div class="tag">03 · Metode</div><p style="margin-top:12px">R&amp;D, arsitektur sistem, perancangan mekanik–elektrik–perangkat lunak, rancangan uji.</p></div>
+        <div class="panel"><div class="tag">04 · Hasil &amp; Pembahasan</div><p style="margin-top:12px">Realisasi sistem, hasil uji per subsistem &amp; terintegrasi, pembahasan.</p></div>
+        <div class="panel"><div class="tag">05 · Simpulan &amp; Saran</div><p style="margin-top:12px">Jawaban rumusan masalah dan arah pengembangan.</p></div>
+        <div class="panel" style="border-style:dashed; background:transparent"><div class="tag orange">Kontribusi</div><p style="margin-top:12px">Integrasi sistem ujung-ke-ujung berbiaya rendah yang terukur — bukan satu algoritma tunggal.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== DIVIDER 01 ===== -->
+  <section class="slide divider">
+    <div class="d-num">01</div>
+    <div class="d-kick">Bagian Satu</div>
+    <h2 class="d-title">Pendahuluan</h2>
+    <div class="d-list"><span>Latar belakang</span><span>Celah penelitian</span><span>Rumusan &amp; tujuan</span><span>Batasan</span></div>
+  </section>
+
+  <!-- 3 · LATAR BELAKANG — masalah -->
+  <section class="slide">
+    <div class="eyebrow">Pendahuluan · Latar Belakang</div>
+    <h1 class="headline rise">Memungut bola manual itu boros waktu &amp; tenaga</h1>
+    <div class="content rise">
+      <div class="cols">
+        <div>
+          <ul class="bullets">
+            <li>Pada latihan olahraga raket, banyak bola berserakan setelah dipukul berulang.</li>
+            <li>Memungut manual <strong>menyita waktu produktif</strong> atlet dan pelatih.</li>
+            <li>Tugas repetitif seperti ini adalah kandidat baik untuk <strong>diotomasi</strong> dengan robot bergerak yang mendeteksi, mendekati, dan mengumpulkan bola secara mandiri.</li>
+          </ul>
+        </div>
+        <div class="ph"><div><b>[Foto/ilustrasi]</b><br>arena latihan dengan bola berserakan<br><span class="sub">(opsional — boleh diganti diagram)</span></div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4 · LATAR BELAKANG — celah -->
+  <section class="slide">
+    <div class="eyebrow">Pendahuluan · Latar Belakang</div>
+    <h1 class="headline rise">Tiga keterbatasan yang berulang pada karya terdahulu</h1>
+    <div class="content rise">
+      <div class="cols-3">
+        <div class="panel">
+          <div class="tag">Persepsi visual</div>
+          <h3 style="margin-top:12px">Kamera statis &amp; warna</h3>
+          <p>Kamera rendah rentan kehilangan target saat mendekat; deteksi warna peka terhadap perubahan cahaya.</p>
+        </div>
+        <div class="panel">
+          <div class="tag">Mekanisme intake</div>
+          <h3 style="margin-top:12px">Vakum / penyapu kaku</h3>
+          <p>Vakum menambah daya &amp; kompleksitas; penyapu kaku memantulkan bola ping-pong yang ringan.</p>
+        </div>
+        <div class="panel">
+          <div class="tag">Arsitektur komputasi</div>
+          <h3 style="margin-top:12px">ML terlalu berat</h3>
+          <p>YOLO standar terlalu berat untuk dijalankan langsung di perangkat robot mobil tanpa akselerasi [4].</p>
+        </div>
+      </div>
+      <div class="note">→ Pemilihan metode deteksi tidak dapat dilepaskan dari <strong>konteks penerapannya</strong>.</div>
+    </div>
+  </section>
+
+  <!-- 5 · MOTIVASI -->
+  <section class="slide">
+    <div class="eyebrow">Pendahuluan · Motivasi</div>
+    <h1 class="headline rise">Bukan “metode paling modern”, tapi “paling sesuai konteks”</h1>
+    <div class="content rise">
+      <div class="cols">
+        <div class="panel">
+          <div class="tag orange">HSV — detektor daring</div>
+          <ul class="bullets tight" style="margin-top:14px">
+            <li>Ringan, dapat dikalibrasi langsung di lapangan, tanpa pelatihan dataset.</li>
+            <li>Cocok untuk pemrosesan waktu-nyata pada perangkat terbatas.</li>
+          </ul>
+        </div>
+        <div class="panel">
+          <div class="tag">YOLOv8 — pembanding luring</div>
+          <ul class="bullets tight" style="margin-top:14px">
+            <li>Lebih tahan variasi visual, tetapi menuntut dataset, pelatihan, dan beban inferensi.</li>
+            <li>Diukur adil terhadap HSV: <em>precision, recall, F1, FPS</em>.</li>
+          </ul>
+        </div>
+      </div>
+      <div class="note">Solusi: robot otonom berbiaya rendah dengan <strong>arsitektur terdistribusi</strong> — deteksi dipindah ke laptop <em>ground station</em>.</div>
+    </div>
+  </section>
+
+  <!-- 6 · RUMUSAN MASALAH -->
+  <section class="slide">
+    <div class="eyebrow">Pendahuluan · Rumusan Masalah</div>
+    <h1 class="headline rise">Rumusan Masalah</h1>
+    <div class="content rise">
+      <div style="display:flex; flex-direction:column; gap:16px">
+        <div class="panel" style="display:flex; gap:20px; align-items:flex-start">
+          <div style="font-family:var(--mono); font-size:30px; font-weight:700; color:var(--accent); line-height:1">1</div>
+          <p style="font-size:19px; color:var(--text)">Bagaimana <strong>deteksi bola ping-pong berbasis HSV</strong> pada arsitektur terdistribusi, dan bagaimana performanya dibanding YOLOv8 secara luring (<em>precision, recall, F1, FPS</em>)?</p>
+        </div>
+        <div class="panel" style="display:flex; gap:20px; align-items:flex-start">
+          <div style="font-family:var(--mono); font-size:30px; font-weight:700; color:var(--accent); line-height:1">2</div>
+          <p style="font-size:19px; color:var(--text)">Bagaimana memformulasikan dan mengimplementasikan <strong>kinematika invers roda Mecanum (4WD)</strong> pada Arduino Uno dengan koreksi arah <em>P-controller</em> dari posisi bola?</p>
+        </div>
+        <div class="panel" style="display:flex; gap:20px; align-items:flex-start">
+          <div style="font-family:var(--mono); font-size:30px; font-weight:700; color:var(--accent); line-height:1">3</div>
+          <p style="font-size:19px; color:var(--text)">Bagaimana merancang <strong>mekanisme intake (gripper cetak 3D)</strong> beserta arsitektur kendali (FSM) &amp; keselamatan (<em>watchdog, heartbeat</em>) agar pengumpulan andal?</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 7 · TUJUAN & MANFAAT -->
+  <section class="slide">
+    <div class="eyebrow">Pendahuluan · Tujuan &amp; Manfaat</div>
+    <h1 class="headline rise">Tujuan &amp; Manfaat Penelitian</h1>
+    <div class="content rise">
+      <div class="cols">
+        <div>
+          <div class="col-head">Tujuan</div>
+          <ul class="bullets tight">
+            <li>Mengimplementasikan deteksi HSV waktu-nyata &amp; mengukur selisihnya terhadap YOLOv8.</li>
+            <li>Menerapkan kinematika invers Mecanum di Arduino → PWM dengan koreksi arah berbasis citra.</li>
+            <li>Membangun &amp; menguji gripper cetak 3D + arsitektur kendali &amp; keselamatan.</li>
+          </ul>
+        </div>
+        <div>
+          <div class="col-head">Manfaat</div>
+          <ul class="bullets tight">
+            <li><strong>Teoritis:</strong> kajian pemilihan metode deteksi sesuai konteks &amp; penerapan Mecanum pada mikrokontroler berbiaya rendah.</li>
+            <li><strong>Praktis:</strong> membantu otomasi pengumpulan bola di fasilitas latihan → menambah waktu produktif.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 8 · BATASAN (opsional) -->
+  <section class="slide">
+    <div class="eyebrow">Pendahuluan · Ruang Lingkup <span class="opt">opsional</span></div>
+    <h1 class="headline rise">Ruang Lingkup &amp; Batasan</h1>
+    <div class="content rise">
+      <div class="cols-3">
+        <div class="panel"><h3>Deteksi</h3><p>HSV sebagai detektor daring utama; YOLOv8 pembanding <strong>luring</strong>, bukan berjalan di robot.</p></div>
+        <div class="panel"><h3>Sasis &amp; kamera</h3><p>Empat roda Mecanum + 2× DRV8833; kamera <strong>terpasang tetap</strong>, tanpa pan-tilt.</p></div>
+        <div class="panel"><h3>Komunikasi</h3><p>MJPEG-over-HTTP/WiFi + UART ke Arduino; UDP di luar lingkup.</p></div>
+        <div class="panel"><h3>Intake</h3><p>Gripper 1 servo (buka–tutup mencengkeram), bukan silinder rotasi kontinu.</p></div>
+        <div class="panel"><h3>Orientasi</h3><p><em>Heading</em> dari integrasi giroskop sumbu-Z; tanpa <em>complementary filter</em>.</p></div>
+        <div class="panel"><h3>Kendali otonom</h3><p>FSM IDLE–SEARCH–APPROACH–COLLECT + koreksi <em>P-controller</em> (bukan PID penuh).</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== DIVIDER 02 ===== -->
+  <section class="slide divider">
+    <div class="d-num">02</div>
+    <div class="d-kick">Bagian Dua</div>
+    <h2 class="d-title">Tinjauan Pustaka &amp; Landasan Teori</h2>
+    <div class="d-list"><span>Penelitian terdahulu</span><span>HSV</span><span>YOLOv8</span><span>Mecanum</span><span>IMU &amp; keselamatan</span></div>
+  </section>
+
+  <!-- 9 · PENELITIAN TERDAHULU -->
+  <section class="slide">
+    <div class="eyebrow">Tinjauan Pustaka</div>
+    <h1 class="headline rise">Penelitian Terdahulu &amp; Celah</h1>
+    <div class="content rise">
+      <table class="tbl">
+        <caption>Tabel — ringkasan karya terdahulu dan celah penelitian</caption>
+        <thead><tr><th>Karya</th><th>Pendekatan</th><th>Keterbatasan</th></tr></thead>
+        <tbody>
+          <tr><td>Sato dkk. [1]</td><td>Diferensial + penyapu elastis (tenis meja)</td><td>Penyapu kaku berisiko memantulkan bola ringan</td></tr>
+          <tr><td>Cheng [3]</td><td><em>Embedded vision</em> posisi relatif bola ping-pong</td><td>Belum menempatkan HSV daring + YOLO luring dalam satu arsitektur</td></tr>
+          <tr><td>Wu [5] · Yun [6]</td><td>Kamera <em>bird-view</em> / stereo (bola golf)</td><td>Tidak sesuai untuk 1 kamera tetap di bodi berbiaya rendah</td></tr>
+          <tr><td>Lokal [7], [8]</td><td>Sistem vakum + kamera / sensor Pixy2</td><td>Menambah daya &amp; kompleksitas pneumatik</td></tr>
+          <tr><td>Gu dkk. [4]</td><td>YOLO pada robot mobil</td><td>Model standar terlalu berat tanpa akselerasi GPU</td></tr>
+        </tbody>
+      </table>
+      <div class="note">Celah → kombinasi <strong>pragmatis &amp; terukur</strong>: HSV daring + YOLOv8 luring + Mecanum di Arduino + gripper TPU + kendali aman.</div>
+    </div>
+  </section>
+
+  <!-- 10 · TEORI HSV -->
+  <section class="slide">
+    <div class="eyebrow">Landasan Teori · Persepsi</div>
+    <h1 class="headline rise">Segmentasi Warna HSV</h1>
+    <div class="content rise">
+      <div class="steps">
+        <span class="step">Frame 640×480</span><span class="sep">→</span>
+        <span class="step">BGR → HSV</span><span class="sep">→</span>
+        <span class="step acc">inRange (H 5–25)</span><span class="sep">→</span>
+        <span class="step">Morfologi erosi/dilasi</span><span class="sep">→</span>
+        <span class="step">findContours</span><span class="sep">→</span>
+        <span class="step">Kontur terbesar</span><span class="sep">→</span>
+        <span class="step acc">Centroid &amp; offset</span>
+      </div>
+      <div class="cols" style="margin-top:26px">
+        <div class="panel">
+          <h3>Kenapa HSV?</h3>
+          <p>Memisahkan warna (<em>hue</em>) dari kecerahan (<em>value</em>) → lebih tahan variasi cahaya dibanding RGB. <em>Centroid</em> dihitung dari momen citra: c<sub>x</sub>=M₁₀/M₀₀.</p>
+        </div>
+        <div class="panel">
+          <h3>Keluaran untuk kendali</h3>
+          <p>Galat offset horizontal e<sub>x</sub> = c<sub>x</sub> − x<sub>tengah</sub> → masukan koreksi arah. Cukup tahu kiri/kanan/dekat-pusat, tanpa estimasi pose 3D.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 11 · TEORI YOLO -->
+  <section class="slide">
+    <div class="eyebrow">Landasan Teori · Persepsi</div>
+    <h1 class="headline rise">YOLOv8 sebagai Pembanding Luring</h1>
+    <div class="content rise">
+      <div class="cols">
+        <div>
+          <ul class="bullets tight">
+            <li>Detektor <strong>satu tahap</strong> (<em>anchor-free</em>, blok C2f) — memprediksi lokasi &amp; kelas dalam satu lintasan.</li>
+            <li>Dilatih &amp; dievaluasi <strong>luring</strong> di Colab, bukan berjalan di robot.</li>
+            <li>Diukur pada set uji <strong>yang sama</strong> dengan HSV agar perbandingan adil.</li>
+          </ul>
+        </div>
+        <div>
+          <div class="col-head">Metrik evaluasi</div>
+          <div class="metrics" style="flex-wrap:wrap">
+            <div class="metric"><div class="num" style="font-size:22px">P&nbsp;=&nbsp;TP∕(TP+FP)</div><div class="lab">Precision</div></div>
+            <div class="metric"><div class="num" style="font-size:22px">R&nbsp;=&nbsp;TP∕(TP+FN)</div><div class="lab">Recall</div></div>
+          </div>
+          <div class="metrics" style="margin-top:14px">
+            <div class="metric"><div class="num" style="font-size:22px">F1</div><div class="lab">Rerata harmonik P &amp; R</div></div>
+            <div class="metric"><div class="num" style="font-size:22px">FPS</div><div class="lab">Kelayakan waktu-nyata</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 12 · TEORI MECANUM -->
+  <section class="slide">
+    <div class="eyebrow">Landasan Teori · Lokomosi</div>
+    <h1 class="headline rise">Kinematika Invers Roda Mecanum (4WD)</h1>
+    <div class="content rise">
+      <div class="cols">
+        <div>
+          <ul class="bullets tight">
+            <li>Rol pasif 45° → superposisi gaya menghasilkan gerak <strong>holonomik</strong> (maju, <em>strafe</em>, putar) tanpa kemudi.</li>
+            <li>Kecepatan tiap roda = fungsi linear dari (v<sub>x</sub>, v<sub>y</sub>, ω).</li>
+            <li>Tanpa <em>encoder</em> → keluaran adalah <strong>perintah kecepatan relatif</strong> ke PWM, bukan kecepatan absolut.</li>
+          </ul>
+        </div>
+        <div class="panel">
+          <div class="col-head" style="border:none; margin-bottom:6px">Bentuk tereduksi (di Arduino)</div>
+          <div style="font-family:var(--mono); font-size:19px; line-height:1.9; color:var(--ink)">
+            FL = v<sub>x</sub> + v<sub>y</sub> + ω<br>
+            FR = v<sub>x</sub> − v<sub>y</sub> − ω<br>
+            RL = v<sub>x</sub> − v<sub>y</sub> + ω<br>
+            RR = v<sub>x</sub> + v<sub>y</sub> − ω
+          </div>
+          <p style="margin-top:12px">Dinormalisasi bila &gt; 255, lalu dipetakan ke PWM + pin arah tiap motor.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 13 · TEORI IMU + SAFETY -->
+  <section class="slide">
+    <div class="eyebrow">Landasan Teori · Orientasi &amp; Keselamatan</div>
+    <h1 class="headline rise">Estimasi Heading &amp; Arsitektur Keselamatan</h1>
+    <div class="content rise">
+      <div class="cols">
+        <div class="panel">
+          <div class="tag">MPU6050 · Heading</div>
+          <ul class="bullets tight" style="margin-top:14px">
+            <li>Integrasi giroskop sumbu-Z: θ<sub>k</sub> = θ<sub>k−1</sub> + (ω<sub>z</sub> − b<sub>z</sub>)·Δt.</li>
+            <li>Rawan <strong>drift</strong> → mitigasi: estimasi bias saat diam + <em>dead zone</em>.</li>
+            <li>Andal untuk horizon pendek; pelacakan target tetap dari umpan balik visual.</li>
+          </ul>
+        </div>
+        <div class="panel">
+          <div class="tag orange">Keselamatan · 3 lapis</div>
+          <ul class="bullets tight" style="margin-top:14px">
+            <li><strong>Watchdog</strong> Arduino: stop motor bila tak ada perintah &lt; 500 ms.</li>
+            <li><strong>Heartbeat</strong> 0,15 s: kirim-ulang perintah aktif agar watchdog tak keliru stop.</li>
+            <li><strong>Clamp PWM + failsafe</strong> STOP saat koneksi putus / mode off.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== DIVIDER 03 ===== -->
+  <section class="slide divider">
+    <div class="d-num">03</div>
+    <div class="d-kick">Bagian Tiga</div>
+    <h2 class="d-title">Metode Penelitian</h2>
+    <div class="d-list"><span>R&amp;D</span><span>Arsitektur</span><span>Mekanik–Elektrik–Perangkat lunak</span><span>Rancangan uji</span></div>
+  </section>
+
+  <!-- 14 · METODE R&D -->
+  <section class="slide">
+    <div class="eyebrow">Metode · Pendekatan</div>
+    <h1 class="headline rise">Metode R&amp;D / Prototyping</h1>
+    <div class="content rise">
+      <div class="pipe" style="margin-top:20px">
+        <div class="state"><div class="s-name" style="font-size:15px">Analisis Kebutuhan</div><div class="s-do">Fungsional &amp; non-fungsional</div></div>
+        <div class="p-arrow">→</div>
+        <div class="state"><div class="s-name" style="font-size:15px">Perancangan</div><div class="s-do">Mekanik, elektrik, perangkat lunak</div></div>
+        <div class="p-arrow">→</div>
+        <div class="state"><div class="s-name" style="font-size:15px">Implementasi</div><div class="s-do">Cetak 3D, rakit, program</div></div>
+        <div class="p-arrow">→</div>
+        <div class="state"><div class="s-name" style="font-size:15px">Pengujian</div><div class="s-do">Subsistem → terintegrasi</div></div>
+        <div class="p-arrow">→</div>
+        <div class="state collect"><div class="s-name" style="font-size:15px">Evaluasi</div><div class="s-do">Iterasi bila perlu</div></div>
+      </div>
+      <div class="note" style="text-align:center; margin-top:26px">↺ Iterasi balik ke Perancangan bila hasil pengujian belum memenuhi kebutuhan.</div>
+    </div>
+  </section>
+
+  <!-- 15 · ARSITEKTUR -->
+  <section class="slide">
+    <div class="eyebrow">Metode · Arsitektur Sistem</div>
+    <h1 class="headline rise">Arsitektur Terdistribusi</h1>
+    <div class="content rise">
+      <div class="arch">
+        <div class="node hi">
+          <div class="role">Ground Station</div>
+          <div class="name">Laptop</div>
+          <div class="desc">Deteksi HSV · FSM · dasbor · pencatatan</div>
+        </div>
+        <div class="link"><div class="lab">WiFi</div><div class="arrow">⇄</div><div class="sub">MJPEG / HTTP</div></div>
+        <div class="node">
+          <div class="role">Kamera + Relay</div>
+          <div class="name">ESP32-CAM</div>
+          <div class="desc">Streaming citra + penerus perintah</div>
+        </div>
+        <div class="link"><div class="lab">UART</div><div class="arrow">⇄</div><div class="sub">115200 baud</div></div>
+        <div class="node">
+          <div class="role">Kendali rendah</div>
+          <div class="name">Arduino Uno</div>
+          <div class="desc">Kinematika · PWM · servo · IMU · watchdog</div>
+        </div>
+      </div>
+      <div class="note" style="text-align:center">Latensi WiFi hanya memengaruhi keputusan tingkat tinggi — <strong>bukan</strong> lingkar kendali motor → aman untuk robot lambat.</div>
+    </div>
+  </section>
+
+  <!-- 16 · MEKANIK -->
+  <section class="slide">
+    <div class="eyebrow">Metode · Perancangan Mekanik</div>
+    <h1 class="headline rise">Mekanik: Sasis, Gripper TPU, Hopper</h1>
+    <div class="content rise">
+      <div class="cols">
+        <div>
+          <ul class="bullets tight">
+            <li><strong>Sasis Mecanum 4WD</strong> — 4 motor DC ber-gearbox, pola rol O/X untuk gerak holonomik.</li>
+            <li><strong>Dudukan kamera tetap</strong> — ditinggikan untuk memperluas bidang pandang lantai.</li>
+            <li><strong>Gripper cetak 3D</strong> — bagian kontak dari <strong>TPU lentur</strong> (compliant) meredam pantulan bola.</li>
+            <li><strong>Hopper</strong> — penampung bola di badan robot.</li>
+          </ul>
+          <div style="margin-top:14px"><span class="tag">Onshape (CAD)</span> <span class="tag">Bambu Lab A1 · cetak 3D</span></div>
+        </div>
+        <div class="ph"><div><b>[Gambar 3.3 — desain 3D Onshape]</b><br>sasis Mecanum · dudukan kamera · gripper · hopper</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 17 · ELEKTRIK -->
+  <section class="slide">
+    <div class="eyebrow">Metode · Perancangan Elektrik</div>
+    <h1 class="headline rise">Elektrik: Rel Daya Terpisah</h1>
+    <div class="content rise">
+      <div class="cols">
+        <div>
+          <div class="col-head">Arsitektur daya</div>
+          <ul class="bullets tight">
+            <li>LiPo 2S (7,4 V) → <strong>2× DRV8833</strong> → 4 motor (rel motor VM).</li>
+            <li>LiPo 2S → <strong>buck XL4015</strong> → rel 5 V (logika + servo).</li>
+            <li><em>Common ground</em> + kapasitor bulk/keramik peredam noise.</li>
+          </ul>
+        </div>
+        <div>
+          <div class="col-head">Pemetaan pin kunci (Uno)</div>
+          <table class="tbl" style="font-size:15px">
+            <tbody>
+              <tr><td>Motor FL/FR/RL/RR (PWM)</td><td class="c">3 · 5 · 6 · 11</td></tr>
+              <tr><td>Servo gripper</td><td class="c">2</td></tr>
+              <tr><td>MPU6050 (I²C)</td><td class="c">A4 · A5</td></tr>
+              <tr><td>UART ke ESP32-CAM</td><td class="c">0 · 1</td></tr>
+            </tbody>
+          </table>
+          <p class="sub" style="margin-top:10px">PWM di pin 3/5/6/11 karena Servo memakai Timer1 (menonaktifkan pin 9/10).</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 18 · PERANGKAT LUNAK -->
+  <section class="slide">
+    <div class="eyebrow">Metode · Perangkat Lunak</div>
+    <h1 class="headline rise">Modul Ground Station &amp; Parameter Deteksi</h1>
+    <div class="content rise">
+      <div class="cols">
+        <div>
+          <div class="col-head">Modul (Python)</div>
+          <ul class="bullets tight">
+            <li><span class="tag">vision</span> deteksi HSV / YOLO</li>
+            <li><span class="tag">brain</span> state machine</li>
+            <li><span class="tag">comms</span> komunikasi &amp; sumber video</li>
+            <li><span class="tag">logger</span> pencatatan CSV</li>
+            <li><span class="tag">app</span> server web + lingkar utama</li>
+          </ul>
+        </div>
+        <div>
+          <div class="col-head">Parameter awal (config.py)</div>
+          <table class="tbl" style="font-size:15px">
+            <tbody>
+              <tr><td>Hue / Sat / Val</td><td class="c">5–25 / 100–255 / 100–255</td></tr>
+              <tr><td>Luas kontur min</td><td class="c">50 px²</td></tr>
+              <tr><td>Ambang APPROACH / COLLECT</td><td class="c">500 / 8000 px²</td></tr>
+              <tr><td>Kp steering</td><td class="c">0,5</td></tr>
+              <tr><td>Servo buka → tutup</td><td class="c">30° → 150°</td></tr>
+            </tbody>
+          </table>
+          <p class="sub" style="margin-top:10px">Semua dapat dikalibrasi <em>live</em> dari slider dasbor.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 19 · FSM -->
+  <section class="slide">
+    <div class="eyebrow">Metode · Kendali Otonom</div>
+    <h1 class="headline rise">Finite State Machine</h1>
+    <div class="content rise">
+      <div class="pipe">
+        <div class="state"><div class="s-name">IDLE</div><div class="s-do">Menunggu perintah mulai</div></div>
+        <div class="p-arrow">→</div>
+        <div class="state"><div class="s-name">SEARCH</div><div class="s-do">Berputar mencari bola</div></div>
+        <div class="p-arrow">→</div>
+        <div class="state"><div class="s-name">APPROACH</div><div class="s-do">Maju + koreksi P-controller<br>ω = Kp·e<sub>x</sub></div></div>
+        <div class="p-arrow">→</div>
+        <div class="state collect"><div class="s-name">COLLECT</div><div class="s-do">Berhenti, buka–tutup gripper</div></div>
+      </div>
+      <div class="metrics" style="margin-top:26px">
+        <div class="metric"><div class="num">≥500</div><div class="lab">Luas → SEARCH ke APPROACH (px²)</div></div>
+        <div class="metric"><div class="num">≥8000</div><div class="lab">Luas → APPROACH ke COLLECT (px²)</div></div>
+        <div class="metric"><div class="num">0,5</div><div class="lab">Kp koreksi arah</div></div>
+        <div class="metric"><div class="num">80/60</div><div class="lab">PWM SEARCH / APPROACH</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 20 · DASBOR -->
+  <section class="slide">
+    <div class="eyebrow">Metode · Ground Station</div>
+    <h1 class="headline rise">Dasbor Web (Flask + SocketIO)</h1>
+    <div class="content rise">
+      <div class="cols">
+        <div class="ph"><div><b>[Tangkapan layar dasbor]</b><br>tayangan video + overlay deteksi &amp; panel kalibrasi</div></div>
+        <div>
+          <ul class="bullets tight">
+            <li>Tayangan video + <strong>overlay deteksi</strong> &amp; pratinjau <em>mask</em> HSV.</li>
+            <li><strong>Slider kalibrasi</strong> HSV &amp; parameter sistem secara langsung.</li>
+            <li>Telemetri: keadaan FSM, <em>heading</em>, FPS, status koneksi.</li>
+            <li>Kendali manual, mode otomatis/manual, <strong>perekaman CSV</strong>.</li>
+            <li><em>Mode demo</em>: webcam / berkas video saat ESP32-CAM tak tersedia.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 21 · RANCANGAN UJI -->
+  <section class="slide">
+    <div class="eyebrow">Metode · Rancangan Pengujian</div>
+    <h1 class="headline rise">Rancangan Pengujian</h1>
+    <div class="content rise">
+      <table class="tbl">
+        <caption>Tabel — metrik &amp; cara ukur per subsistem · arena 2×2 m grid · n = 10–30/kondisi</caption>
+        <thead><tr><th>Subsistem</th><th>Metrik</th><th>Cara ukur</th></tr></thead>
+        <tbody>
+          <tr><td>Deteksi</td><td>P, R, F1; laju vs jarak &amp; lux; FPS/latensi; HSV vs YOLO</td><td>Anotasi TP/FP/FN; input video identik</td></tr>
+          <tr><td>Navigasi</td><td>Galat posisi; waktu tempuh; drift strafe (± IMU)</td><td>Ukur fisik di grid; ulang per kondisi</td></tr>
+          <tr><td>Intake</td><td>Keberhasilan cengkeram (%); waktu/bola</td><td>Hitung berhasil/gagal; stopwatch</td></tr>
+          <tr><td>Terintegrasi</td><td>Clear lapangan (%); total waktu; cakupan</td><td>Skenario arena penuh; log CSV</td></tr>
+        </tbody>
+      </table>
+      <div class="note">Hasil dilaporkan sebagai rata-rata ± simpangan baku beserta tingkat keberhasilan (%) dan <em>n</em>.</div>
+    </div>
+  </section>
+
+  <!-- ===== DIVIDER 04 ===== -->
+  <section class="slide divider">
+    <div class="d-num">04</div>
+    <div class="d-kick">Bagian Empat</div>
+    <h2 class="d-title">Hasil &amp; Pembahasan</h2>
+    <div class="d-list"><span>Realisasi</span><span>Uji subsistem</span><span>Uji terintegrasi</span><span>Pembahasan</span></div>
+  </section>
+
+  <!-- 22 · HASIL IMPLEMENTASI -->
+  <section class="slide">
+    <div class="eyebrow">Hasil · Implementasi</div>
+    <h1 class="headline rise">Realisasi Sistem</h1>
+    <div class="content rise">
+      <div class="cols-3" style="height:auto">
+        <div class="ph" style="min-height:230px"><div><b>[Foto 4.1 — robot]</b><br>tampak depan / samping / atas</div></div>
+        <div class="ph" style="min-height:230px"><div><b>[Foto 4.3 — rangkaian elektrik]</b></div></div>
+        <div class="ph" style="min-height:230px"><div><b>[Foto 4.4 — dasbor + mask HSV]</b></div></div>
+      </div>
+      <div class="note">Terealisasi: sasis Mecanum + gripper TPU · rel daya terpisah (DRV8833 / XL4015) · ground station HSV + FSM + dasbor.</div>
+    </div>
+  </section>
+
+  <!-- 23 · UJI DETEKSI HSV vs YOLO -->
+  <section class="slide">
+    <div class="eyebrow">Hasil · Pengujian Deteksi</div>
+    <h1 class="headline rise">HSV vs YOLOv8 <span class="opt">isi setelah uji</span></h1>
+    <div class="content rise">
+      <div class="cols">
+        <table class="tbl">
+          <caption>Tabel 4.2 — perbandingan performa deteksi</caption>
+          <thead><tr><th>Metrik</th><th class="c">HSV</th><th class="c">YOLOv8</th></tr></thead>
+          <tbody>
+            <tr><td>Precision</td><td class="c fill-cell">⟨…⟩</td><td class="c fill-cell">⟨…⟩</td></tr>
+            <tr><td>Recall</td><td class="c fill-cell">⟨…⟩</td><td class="c fill-cell">⟨…⟩</td></tr>
+            <tr><td>F1-score</td><td class="c fill-cell">⟨…⟩</td><td class="c fill-cell">⟨…⟩</td></tr>
+            <tr><td>FPS</td><td class="c fill-cell">⟨…⟩</td><td class="c fill-cell">⟨…⟩</td></tr>
+            <tr><td>n sampel</td><td class="c fill-cell" colspan="2">⟨…⟩</td></tr>
+          </tbody>
+        </table>
+        <div>
+          <div class="col-head">Yang perlu ditegaskan</div>
+          <ul class="bullets tight">
+            <li>Mana lebih <strong>teliti</strong>, mana lebih <strong>cepat</strong> — kuantifikasi selisihnya.</li>
+            <li>Apakah selisih akurasi <strong>sepadan</strong> dengan beban komputasi pada konteks ini?</li>
+            <li>Menegaskan HSV sebagai detektor <strong>daring</strong> yang sesuai.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 24 · UJI DETEKSI jarak & cahaya -->
+  <section class="slide">
+    <div class="eyebrow">Hasil · Pengujian Deteksi</div>
+    <h1 class="headline rise">Laju Deteksi: Jarak &amp; Cahaya <span class="opt">isi setelah uji</span></h1>
+    <div class="content rise">
+      <div class="cols">
+        <div class="ph"><div><b>[Gambar 4.6 — grafik laju vs jarak]</b><br>20 · 40 · 60 · 80 · 100 cm → ⟨…⟩ %</div></div>
+        <div>
+          <table class="tbl">
+            <caption>Tabel 4.4 — laju deteksi vs cahaya</caption>
+            <thead><tr><th>Kondisi</th><th class="c">Lux</th><th class="c">Laju (%)</th></tr></thead>
+            <tbody>
+              <tr><td>Redup</td><td class="c fill-cell">⟨…⟩</td><td class="c fill-cell">⟨…⟩</td></tr>
+              <tr><td>Normal</td><td class="c fill-cell">⟨…⟩</td><td class="c fill-cell">⟨…⟩</td></tr>
+              <tr><td>Terang</td><td class="c fill-cell">⟨…⟩</td><td class="c fill-cell">⟨…⟩</td></tr>
+            </tbody>
+          </table>
+          <div class="note">Sensitivitas HSV terhadap cahaya → dimitigasi kalibrasi ambang saat operasi.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 25 · UJI NAVIGASI -->
+  <section class="slide">
+    <div class="eyebrow">Hasil · Pengujian Navigasi</div>
+    <h1 class="headline rise">Navigasi &amp; Efek Koreksi IMU <span class="opt">isi setelah uji</span></h1>
+    <div class="content rise">
+      <div class="metrics">
+        <div class="metric"><div class="num fill">⟨…⟩ cm</div><div class="lab">Galat posisi berhenti ke bola (rata ± SB)</div></div>
+        <div class="metric"><div class="num fill">⟨…⟩ cm</div><div class="lab">Drift strafe — tanpa IMU</div></div>
+        <div class="metric"><div class="num fill">⟨…⟩ cm</div><div class="lab">Drift strafe — dengan IMU</div></div>
+        <div class="metric"><div class="num fill">⟨…⟩ %</div><div class="lab">Perbaikan drift oleh koreksi IMU</div></div>
+      </div>
+      <div class="note" style="margin-top:24px">Kinematika Mecanum menghasilkan gerak holonomik terarah; tanpa <em>encoder</em> gerak <strong>open-loop</strong> → selip &amp; drift menyisakan galat, pelacakan bertumpu pada umpan balik visual.</div>
+    </div>
+  </section>
+
+  <!-- 26 · UJI GRIPPER + TERINTEGRASI -->
+  <section class="slide">
+    <div class="eyebrow">Hasil · Intake &amp; Sistem Terintegrasi</div>
+    <h1 class="headline rise">Gripper &amp; Sistem Terintegrasi <span class="opt">isi setelah uji</span></h1>
+    <div class="content rise">
+      <div class="cols">
+        <div>
+          <div class="col-head">Gripper (Tabel 4.8)</div>
+          <div class="metrics" style="flex-direction:column">
+            <div class="metric"><div class="num fill">⟨…⟩ %</div><div class="lab">Keberhasilan cengkeram</div></div>
+            <div class="metric"><div class="num fill">⟨…⟩ s</div><div class="lab">Waktu per bola</div></div>
+          </div>
+        </div>
+        <div>
+          <div class="col-head">Sistem terintegrasi (Tabel 4.9)</div>
+          <table class="tbl" style="font-size:16px">
+            <tbody>
+              <tr><td>Clear lapangan (N=⟨…⟩)</td><td class="c fill-cell">⟨…⟩ %</td></tr>
+              <tr><td>Total waktu clear</td><td class="c fill-cell">⟨…⟩ s</td></tr>
+              <tr><td>Cakupan bola terkumpul</td><td class="c fill-cell">⟨…⟩ %</td></tr>
+              <tr><td>Endurance daya <span class="opt">ops.</span></td><td class="c fill-cell">⟨…⟩</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="note">Gripper TPU meredam pantulan bola ringan; FSM + watchdog/heartbeat menjaga robot tetap terkendali.</div>
+    </div>
+  </section>
+
+  <!-- 27 · PEMBAHASAN -->
+  <section class="slide">
+    <div class="eyebrow">Hasil · Pembahasan</div>
+    <h1 class="headline rise">Pembahasan — Temuan Kunci</h1>
+    <div class="content rise">
+      <div class="cols-3">
+        <div class="panel"><div class="tag orange">RM 1 · Deteksi</div><p style="margin-top:12px">HSV lebih ringan &amp; dapat dikalibrasi saat operasi → <strong>lebih sesuai sebagai detektor daring</strong>; YOLOv8 bernilai sebagai pembanding &amp; untuk kondisi kompleks.</p></div>
+        <div class="panel"><div class="tag orange">RM 2 · Navigasi</div><p style="margin-top:12px">Mecanum holonomik berhasil; keterbatasan <em>open-loop</em> tanpa encoder ditekan sebagian oleh koreksi IMU &amp; umpan balik visual.</p></div>
+        <div class="panel"><div class="tag orange">RM 3 · Intake &amp; sistem</div><p style="margin-top:12px">Gripper TPU lentur meredam pantulan; kontribusi nyata pada <strong>keandalan</strong>: arsitektur keselamatan watchdog/heartbeat.</p></div>
+      </div>
+      <div class="note">Setiap klaim ditautkan ke data BAB IV &amp; penelitian terdahulu (BAB II) — <strong>ganti ⟨…⟩ dengan angka nyata sebelum sidang</strong>.</div>
+    </div>
+  </section>
+
+  <!-- 28 · KETERBATASAN (opsional) -->
+  <section class="slide">
+    <div class="eyebrow">Hasil · Keterbatasan <span class="opt">opsional</span></div>
+    <h1 class="headline rise">Keterbatasan Penelitian</h1>
+    <div class="content rise">
+      <ul class="bullets">
+        <li><strong>Transport MJPEG-over-HTTP</strong> menambah latensi dibanding UDP → membatasi pendekatan agresif.</li>
+        <li><strong>Tanpa encoder</strong> → navigasi open-loop, rentan selip roda Mecanum.</li>
+        <li><strong>Heading giroskop tunggal</strong> rawan drift (tanpa fusi sensor).</li>
+        <li><strong>Kamera tetap</strong> → jangkauan deteksi terbatas saat robot sangat dekat bola.</li>
+      </ul>
+      <div class="note">→ Menjadi dasar langsung bagi Saran (BAB V).</div>
+    </div>
+  </section>
+
+  <!-- ===== DIVIDER 05 ===== -->
+  <section class="slide divider">
+    <div class="d-num">05</div>
+    <div class="d-kick">Bagian Lima</div>
+    <h2 class="d-title">Simpulan &amp; Saran</h2>
+    <div class="d-list"><span>Jawaban rumusan masalah</span><span>Arah pengembangan</span></div>
+  </section>
+
+  <!-- 29 · SIMPULAN -->
+  <section class="slide">
+    <div class="eyebrow">Simpulan</div>
+    <h1 class="headline rise">Simpulan <span class="opt">isi angka setelah uji</span></h1>
+    <div class="content rise">
+      <div style="display:flex; flex-direction:column; gap:14px">
+        <div class="panel" style="display:flex; gap:18px; align-items:flex-start">
+          <div style="font-family:var(--mono); font-size:26px; font-weight:700; color:var(--accent)">1</div>
+          <p style="font-size:18px">Deteksi HSV berjalan <em>real-time</em> (P ⟨…⟩, R ⟨…⟩, F1 ⟨…⟩, ⟨…⟩ FPS); dibanding YOLOv8 luring, HSV [lebih ringan/cepat] → sesuai sebagai detektor daring.</p>
+        </div>
+        <div class="panel" style="display:flex; gap:18px; align-items:flex-start">
+          <div style="font-family:var(--mono); font-size:26px; font-weight:700; color:var(--accent)">2</div>
+          <p style="font-size:18px">Kinematika Mecanum di Arduino → gerak holonomik mendekati bola; galat berhenti ⟨…⟩ cm, drift strafe ⟨…⟩→⟨…⟩ cm dengan koreksi IMU.</p>
+        </div>
+        <div class="panel" style="display:flex; gap:18px; align-items:flex-start">
+          <div style="font-family:var(--mono); font-size:26px; font-weight:700; color:var(--accent)">3</div>
+          <p style="font-size:18px">Gripper TPU berhasil (cengkeram ⟨…⟩ %); sistem terintegrasi meng-<em>clear</em> ⟨…⟩ % bola, didukung FSM + watchdog/heartbeat.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 30 · SARAN -->
+  <section class="slide">
+    <div class="eyebrow">Saran</div>
+    <h1 class="headline rise">Saran Pengembangan</h1>
+    <div class="content rise">
+      <div class="cols">
+        <div>
+          <div class="col-head">Inti (menaut ke keterbatasan)</div>
+          <ul class="bullets tight">
+            <li><strong>Transport latensi rendah</strong> — UDP / WebRTC.</li>
+            <li><strong>Heading stabil</strong> — complementary filter / fusi sensor.</li>
+            <li><strong>Kendali roda tertutup</strong> — tambah encoder.</li>
+          </ul>
+        </div>
+        <div>
+          <div class="col-head">Lanjutan <span class="opt">opsional</span></div>
+          <ul class="bullets tight">
+            <li>Pelacakan kamera aktif (pan-tilt + PID).</li>
+            <li>YOLOv8 daring bila perangkat memadai.</li>
+            <li>Navigasi holonomik penuh (manfaatkan strafe).</li>
+            <li>Perluasan pengujian (arena, lantai, jumlah bola).</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 31 · CLOSING -->
+  <section class="slide closing">
+    <div class="rise">
+      <div style="display:flex; align-items:center; gap:16px"><span class="ball"></span><span style="font-family:var(--mono); letter-spacing:.18em; text-transform:uppercase; color:#8FADC8; font-size:14px">Terima kasih</span></div>
+      <p class="big" style="margin-top:18px">Terima Kasih.</p>
+      <div class="qa">Sesi Tanya-Jawab</div>
+      <div class="sig">Muhammad Maulana · NIM ⟨…⟩<br>Pendidikan Teknik Otomasi Industri &amp; Robotika · UPI</div>
+    </div>
+  </section>
+
+  <!-- chrome -->
+  <div class="chrome" id="chrome">
+    <div class="brandmark"><span class="ball sm"></span> Otomasi Robot Pengumpul Bola</div>
+    <div class="counter" id="counter">01 / 31</div>
+  </div>
+  <div class="progress" id="progress"></div>
+  <div class="navbtns">
+    <button id="prev" aria-label="Slide sebelumnya">‹</button>
+    <button id="next" aria-label="Slide berikutnya">›</button>
+  </div>
+</div>
+
+<script>
+(function(){
+  var stage   = document.getElementById('stage');
+  var slides  = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+  var counter = document.getElementById('counter');
+  var progress= document.getElementById('progress');
+  var chrome  = document.getElementById('chrome');
+  var total   = slides.length;
+  var idx     = 0;
+
+  function pad(n){ return (n<10?'0':'')+n; }
+
+  function render(){
+    slides.forEach(function(s,i){ s.classList.toggle('is-active', i===idx); });
+    counter.textContent = pad(idx+1)+' / '+pad(total);
+    progress.style.width = ((idx)/(total-1)*100)+'%';
+    // chrome & progress warna gelap saat slide gelap
+    var dark = slides[idx].classList.contains('divider') ||
+               slides[idx].classList.contains('title')   ||
+               slides[idx].classList.contains('closing');
+    chrome.classList.toggle('dark-chrome', dark);
+    chrome.style.opacity = (slides[idx].classList.contains('title')) ? '0' : '1';
+    if(location.hash !== '#'+(idx+1)) history.replaceState(null,'','#'+(idx+1));
+  }
+
+  function go(n){ idx = Math.max(0, Math.min(total-1, n)); render(); }
+  function next(){ go(idx+1); }
+  function prev(){ go(idx-1); }
+
+  function fit(){
+    var s = Math.min(window.innerWidth/1280, window.innerHeight/720);
+    stage.style.transform = 'translate(-50%,-50%) scale('+s+')';
+  }
+
+  document.addEventListener('keydown', function(e){
+    if(e.key==='ArrowRight'||e.key==='PageDown'||e.key===' '){ e.preventDefault(); next(); }
+    else if(e.key==='ArrowLeft'||e.key==='PageUp'){ e.preventDefault(); prev(); }
+    else if(e.key==='Home'){ go(0); }
+    else if(e.key==='End'){ go(total-1); }
+    else if(e.key==='f'||e.key==='F'){
+      if(!document.fullscreenElement){ document.documentElement.requestFullscreen&&document.documentElement.requestFullscreen(); }
+      else { document.exitFullscreen&&document.exitFullscreen(); }
+    }
+  });
+
+  // klik di panggung → maju (kecuali tombol nav)
+  stage.addEventListener('click', function(e){
+    if(e.target.closest('.navbtns')) return;
+    next();
+  });
+  document.getElementById('next').addEventListener('click', function(e){ e.stopPropagation(); next(); });
+  document.getElementById('prev').addEventListener('click', function(e){ e.stopPropagation(); prev(); });
+
+  window.addEventListener('resize', fit);
+  window.addEventListener('hashchange', function(){
+    var n = parseInt(location.hash.replace('#',''),10);
+    if(!isNaN(n) && n-1!==idx) go(n-1);
+  });
+
+  // mulai dari hash bila ada
+  var start = parseInt((location.hash||'').replace('#',''),10);
+  if(!isNaN(start)) idx = Math.max(0,Math.min(total-1,start-1));
+
+  fit(); render();
+})();
+</script>
+</body>
+</html>

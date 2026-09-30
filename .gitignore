@@ -38,6 +38,10 @@ ground-station/logs/
 # Ground Station uploaded test videos
 ground-station/uploads/
 
+# Bobot model YOLO (auto-download / hasil latih) — jangan di-commit
+*.pt
+
+
 # OS generated files
 .DS_Store
 .DS_Store?
