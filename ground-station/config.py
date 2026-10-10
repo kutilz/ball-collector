@@ -53,6 +53,8 @@ FRAME_HEIGHT = 480
 # ═══════════════════════════════════════════════════════════════
 #   "hsv"  → segmentasi warna HSV (ringan, default, tanpa dependensi berat)
 #   "yolo" → deteksi objek berbasis machine learning (YOLOv8, butuh ultralytics)
+#   "yoloworld" → deteksi open-vocabulary YOLO-World: objek dicari lewat prompt
+#                 teks (mis. "orange ping pong ball"), tanpa training ulang
 # Backend bisa dialihkan runtime lewat event 'set_detector'; nilai ini hanya
 # menentukan mode awal saat ground station start.
 DETECTOR_BACKEND = "hsv"
@@ -70,6 +72,14 @@ YOLO_MODEL = "yolov8n.pt"
 YOLO_CONF = 0.35
 YOLO_IMGSZ = 416
 YOLO_CLASSES = [32]
+
+# Konfigurasi YOLO-World — dipakai hanya saat backend "yoloworld" aktif.
+#   YOLOWORLD_MODEL  : bobot YOLO-World (diunduh otomatis saat pertama dipakai).
+#                      Varian "s" = paling ringan, cocok untuk inferensi CPU.
+#   YOLOWORLD_PROMPT : daftar deskripsi teks objek yang dicari. Bisa diganti
+#                      live dari UI. YOLO_CONF & YOLO_IMGSZ ikut dipakai.
+YOLOWORLD_MODEL = "yolov8s-worldv2.pt"
+YOLOWORLD_PROMPT = ["orange ping pong ball"]
 
 # ═══════════════════════════════════════════════════════════════
 # HSV Default — Rentang warna bola ping-pong oranye

@@ -1,14 +1,17 @@
 """
 vision.py — Pipeline deteksi bola dengan backend yang bisa dipilih.
 
-Dua backend deteksi tersedia dan bisa dialihkan saat runtime dari UI:
-  • "hsv"  — segmentasi warna HSV (OpenCV). Ringan, default, tanpa
-             dependensi berat. Cocok jalan di laptop/edge tanpa GPU.
-  • "yolo" — deteksi objek machine learning (YOLOv8 via Ultralytics).
-             Lebih tahan terhadap variasi warna/pencahayaan, tapi butuh
-             paket `ultralytics` terpasang (lihat requirements-ai.txt).
+Tiga backend deteksi tersedia dan bisa dialihkan saat runtime dari UI:
+  • "hsv"       — segmentasi warna HSV (OpenCV). Ringan, default, tanpa
+                  dependensi berat. Cocok jalan di laptop/edge tanpa GPU.
+  • "yolo"      — deteksi objek machine learning (YOLOv8 via Ultralytics).
+                  Lebih tahan terhadap variasi warna/pencahayaan, tapi butuh
+                  paket `ultralytics` terpasang (lihat requirements-ai.txt).
+  • "yoloworld" — YOLO-World (open-vocabulary): objek dicari lewat prompt
+                  teks, mis. "orange ping pong ball", tanpa training ulang.
+                  Dependensi sama dengan "yolo".
 
-Kedua backend menghasilkan dict deteksi berformat SAMA sehingga otak robot
+Semua backend menghasilkan dict deteksi berformat SAMA sehingga otak robot
 (brain.py) tidak perlu tahu backend mana yang aktif:
 
   detected, cx, cy, area, bbox, offset_x, offset_y, frame_annotated
@@ -24,9 +27,10 @@ import config
 
 
 class VisionPipeline:
-    """Orkestrator deteksi bola. Mendukung backend HSV & YOLO."""
+    """Orkestrator deteksi bola. Mendukung backend HSV, YOLO & YOLO-World."""
 
-    VALID_BACKENDS = ("hsv", "yolo")
+    VALID_BACKENDS = ("hsv", "yolo", "yoloworld")
+    AI_BACKENDS = ("yolo", "yoloworld")
 
     def __init__(self):
         # ── Parameter HSV (default dari config) ──────────────
@@ -48,19 +52,25 @@ class VisionPipeline:
         backend = getattr(config, "DETECTOR_BACKEND", "hsv")
         self.backend = backend if backend in self.VALID_BACKENDS else "hsv"
 
-        # ── State YOLO (lazy-load) ───────────────────────────
-        self._yolo = None            # objek model (None = belum dimuat)
-        self._yolo_error = None      # pesan error terakhir saat memuat/inferensi
-        self._yolo_model_name = getattr(config, "YOLO_MODEL", "yolov8n.pt")
+        # ── State model AI (lazy-load), per backend ──────────
+        self._models = {k: None for k in self.AI_BACKENDS}  # None = belum dimuat
+        self._errors = {k: None for k in self.AI_BACKENDS}  # error muat/inferensi terakhir
+        self._model_names = {
+            "yolo": getattr(config, "YOLO_MODEL", "yolov8n.pt"),
+            "yoloworld": getattr(config, "YOLOWORLD_MODEL", "yolov8s-worldv2.pt"),
+        }
+        self._world_prompt = list(getattr(config, "YOLOWORLD_PROMPT", ["ping pong ball"]))
+        # Backend yang terakhir diminta UI — errornya yang ditampilkan di status.
+        self._requested = self.backend
 
     # ═════════════════════════════════════════════════════════
     # Pemilihan backend
     # ═════════════════════════════════════════════════════════
     def set_backend(self, name):
         """
-        Alihkan backend deteksi ke "hsv" atau "yolo".
+        Alihkan backend deteksi ke "hsv", "yolo", atau "yoloworld".
 
-        Untuk "yolo", model coba dimuat saat itu juga. Jika gagal (paket
+        Untuk backend AI, model coba dimuat saat itu juga. Jika gagal (paket
         belum terpasang / bobot tak ditemukan), backend TETAP di nilai lama
         dan error dikembalikan agar UI bisa memberi tahu operator.
 
@@ -72,45 +82,78 @@ class VisionPipeline:
             return {"ok": False, "backend": self.backend,
                     "error": f"Backend '{name}' tidak dikenal."}
 
-        if name == "yolo" and not self._ensure_yolo():
+        self._requested = name
+        if name in self.AI_BACKENDS and not self._ensure_model(name):
             # Gagal memuat → jangan pindah backend, laporkan alasan.
-            return {"ok": False, "backend": self.backend, "error": self._yolo_error}
+            return {"ok": False, "backend": self.backend, "error": self._errors[name]}
 
         self.backend = name
         return {"ok": True, "backend": self.backend, "error": None}
 
     def get_backend_info(self):
         """Info backend untuk sinkronisasi & diagnosa di UI."""
+        shown = self._requested if self._requested in self.AI_BACKENDS else self.backend
         return {
             "backend": self.backend,
-            "yolo_ready": self._yolo is not None,
-            "yolo_model": self._yolo_model_name,
-            "yolo_error": self._yolo_error,
+            "requested": self._requested,
+            "error": self._errors.get(shown),
+            "yolo_ready": self._models["yolo"] is not None,
+            "yolo_model": self._model_names["yolo"],
+            "world_ready": self._models["yoloworld"] is not None,
+            "world_model": self._model_names["yoloworld"],
+            "world_prompt": ", ".join(self._world_prompt),
         }
 
-    def _ensure_yolo(self):
+    def set_world_prompt(self, text):
         """
-        Muat model YOLO sekali (lazy). Return True bila model siap dipakai.
-        Impor `ultralytics` sengaja ditunda ke sini supaya ground station
-        tetap bisa jalan dengan HSV tanpa memasang torch/ultralytics.
+        Ganti prompt teks YOLO-World. Beberapa objek dipisah koma, mis.
+        "orange ping pong ball, white ping pong ball". Bila model sudah
+        dimuat, kelasnya langsung diperbarui.
+
+        Returns:
+            dict: {"ok": bool, "error": str|None}
         """
-        if self._yolo is not None:
+        prompt = [p.strip() for p in str(text or "").split(",") if p.strip()]
+        if not prompt:
+            return {"ok": False, "error": "Prompt YOLO-World tidak boleh kosong."}
+        model = self._models["yoloworld"]
+        if model is not None:
+            try:
+                model.set_classes(prompt)
+            except Exception as exc:  # noqa: BLE001
+                return {"ok": False, "error": f"Gagal menerapkan prompt: {exc}"}
+        self._world_prompt = prompt
+        return {"ok": True, "error": None}
+
+    def _ensure_model(self, kind):
+        """
+        Muat model AI ("yolo"/"yoloworld") sekali (lazy). Return True bila
+        model siap dipakai. Impor `ultralytics` sengaja ditunda ke sini supaya
+        ground station tetap bisa jalan dengan HSV tanpa memasang torch.
+        """
+        if self._models[kind] is not None:
             return True
         try:
-            from ultralytics import YOLO  # impor berat — hanya saat dibutuhkan
+            from ultralytics import YOLO, YOLOWorld  # impor berat — hanya saat dibutuhkan
         except Exception:  # noqa: BLE001 — apa pun penyebabnya, degrade ke pesan UI
-            self._yolo_error = (
+            self._errors[kind] = (
                 "Paket 'ultralytics' belum terpasang. "
                 "Jalankan: pip install -r requirements-ai.txt"
             )
             return False
+        name = self._model_names[kind]
         try:
-            self._yolo = YOLO(self._yolo_model_name)
-            self._yolo_error = None
+            if kind == "yoloworld":
+                model = YOLOWorld(name)
+                model.set_classes(self._world_prompt)  # encode prompt teks sekali
+            else:
+                model = YOLO(name)
+            self._models[kind] = model
+            self._errors[kind] = None
             return True
         except Exception as exc:  # noqa: BLE001
-            self._yolo_error = f"Gagal memuat model '{self._yolo_model_name}': {exc}"
-            self._yolo = None
+            self._errors[kind] = f"Gagal memuat model '{name}': {exc}"
+            self._models[kind] = None
             return False
 
     # ═════════════════════════════════════════════════════════
@@ -150,11 +193,11 @@ class VisionPipeline:
                  (100, 100, 100), 1, cv2.LINE_AA)
 
         # 2. Deteksi via backend aktif → (cx, cy, area, bbox) atau None.
-        #    Bila backend "yolo" tapi model tak siap, fallback otomatis ke HSV
+        #    Bila backend AI tapi model tak siap, fallback otomatis ke HSV
         #    agar robot tidak buta.
-        if self.backend == "yolo" and self._ensure_yolo():
-            det = self._detect_yolo(resized)
-            active = "yolo"
+        if self.backend in self.AI_BACKENDS and self._ensure_model(self.backend):
+            det = self._detect_ai(self.backend, resized)
+            active = self.backend
         else:
             det = self._detect_hsv(resized)
             active = "hsv"
@@ -221,21 +264,22 @@ class VisionPipeline:
         return cx, cy, float(area), bbox
 
     # ═════════════════════════════════════════════════════════
-    # Backend YOLO — deteksi objek machine learning
+    # Backend AI (YOLO / YOLO-World) — deteksi objek machine learning
     # ═════════════════════════════════════════════════════════
-    def _detect_yolo(self, resized):
+    def _detect_ai(self, kind, resized):
         """
-        Deteksi bola via YOLOv8. Pilih kotak terbesar di antara kelas yang
-        diizinkan (config.YOLO_CLASSES) di atas ambang confidence.
+        Deteksi bola via YOLOv8 / YOLO-World. Pilih kotak terbesar di atas
+        ambang confidence. YOLO dibatasi ke kelas config.YOLO_CLASSES;
+        YOLO-World menerima semua kelas karena kelasnya = prompt teks.
         Returns (cx, cy, area, bbox) atau None.
 
         Catatan: "area" di sini = luas bounding box (w*h), bukan luas kontur.
         Skalanya berbeda dari HSV, jadi ambang AREA_APPROACH/AREA_COLLECT
         mungkin perlu dikalibrasi ulang saat memakai backend ini.
         """
-        allowed = list(getattr(config, "YOLO_CLASSES", []) or [])
+        allowed = [] if kind == "yoloworld" else list(getattr(config, "YOLO_CLASSES", []) or [])
         try:
-            results = self._yolo.predict(
+            results = self._models[kind].predict(
                 resized,
                 conf=float(config.YOLO_CONF),
                 imgsz=int(getattr(config, "YOLO_IMGSZ", 416)),
@@ -243,7 +287,7 @@ class VisionPipeline:
                 verbose=False,
             )
         except Exception as exc:  # noqa: BLE001 — inferensi gagal → anggap tak ada deteksi
-            self._yolo_error = f"Inferensi YOLO gagal: {exc}"
+            self._errors[kind] = f"Inferensi {kind} gagal: {exc}"
             return None
 
         best = None          # (area, cx, cy, bbox)
@@ -297,8 +341,8 @@ class VisionPipeline:
 
     def _draw_badge(self, annotated, active):
         """Badge kecil kiri-atas menandai backend deteksi yang aktif."""
-        label = "AI: YOLO" if active == "yolo" else "HSV"
-        color = (255, 180, 0) if active == "yolo" else (0, 255, 200)
+        label = {"yolo": "AI: YOLO", "yoloworld": "AI: YOLO-World"}.get(active, "HSV")
+        color = (255, 180, 0) if active in self.AI_BACKENDS else (0, 255, 200)
         cv2.putText(annotated, label, (10, 22),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
 
@@ -308,11 +352,12 @@ class VisionPipeline:
     def get_mask_preview(self):
         """
         Kembalikan frame preview mask HSV terkini.
-        Saat backend YOLO aktif, mask HSV tidak relevan → tampilkan info.
+        Saat backend AI aktif, mask HSV tidak relevan → tampilkan info.
         """
-        if self.backend == "yolo":
+        if self.backend in self.AI_BACKENDS:
+            label = "YOLO-World" if self.backend == "yoloworld" else "YOLO"
             blank = np.zeros((config.FRAME_HEIGHT, config.FRAME_WIDTH, 3), dtype=np.uint8)
-            cv2.putText(blank, "Mode AI (YOLO) aktif", (90, 220),
+            cv2.putText(blank, f"Mode AI ({label}) aktif", (70, 220),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 180, 0), 2, cv2.LINE_AA)
             cv2.putText(blank, "mask HSV nonaktif", (120, 255),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (120, 120, 120), 1, cv2.LINE_AA)

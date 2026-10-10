@@ -102,6 +102,26 @@ if errorlevel 1 (
 ) else (
     echo      Semua library sudah terpasang.
 )
+
+REM Fitur AI (YOLO / YOLO-World) opsional: ditawarkan sekali per venv.
+REM Jawaban "tidak" dicatat di venv\.skip-ai supaya tidak ditanya terus.
+"%VENVPY%" -c "import ultralytics, clip" >nul 2>&1
+if not errorlevel 1 goto :AI_DONE
+if exist "%APPDIR%\venv\.skip-ai" goto :AI_DONE
+echo.
+echo      Fitur AI ^(mode "AI - YOLO" / "AI - YOLO-World" di web^) belum terpasang.
+echo      Opsional, mode HSV tetap jalan tanpa ini. Unduhan sekitar 1 GB.
+choice /C YN /T 30 /D N /M "     Pasang fitur AI sekarang"
+if errorlevel 2 (
+    echo skip> "%APPDIR%\venv\.skip-ai"
+    echo      Dilewati. Untuk memasang nanti: hapus file ground-station\venv\.skip-ai
+    echo      lalu jalankan file ini lagi.
+    goto :AI_DONE
+)
+echo      Memasang fitur AI ^(mohon tunggu, bisa 5-15 menit^)...
+"%VENVPY%" -m pip install -r "%APPDIR%\requirements-ai.txt"
+if errorlevel 1 echo      [PERINGATAN] Gagal memasang fitur AI. Mode HSV tetap bisa dipakai.
+:AI_DONE
 echo.
 
 if "%SETUP_ONLY%"=="1" (

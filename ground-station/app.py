@@ -319,7 +319,7 @@ def handle_update_hsv(data):
 @socketio.on("set_detector")
 def handle_set_detector(data):
     """
-    Alihkan backend deteksi bola (hsv / yolo) saat runtime.
+    Alihkan backend deteksi bola (hsv / yolo / yoloworld) saat runtime.
 
     Untuk YOLO, model bisa perlu waktu memuat (dan mengunduh bobot saat
     pertama kali). Bila gagal, backend tetap di nilai lama dan info error
@@ -329,6 +329,13 @@ def handle_set_detector(data):
     backend = data.get("backend", "hsv")
     result = vision.set_backend(backend)
     socketio.emit("detector_state", {**result, "info": vision.get_backend_info()})
+
+
+@socketio.on("set_world_prompt")
+def handle_set_world_prompt(data):
+    """Ganti prompt teks YOLO-World (objek dipisah koma) + broadcast hasilnya."""
+    result = vision.set_world_prompt(data.get("prompt", ""))
+    socketio.emit("world_prompt_state", {**result, "info": vision.get_backend_info()})
 
 
 def _ack_detail(status):

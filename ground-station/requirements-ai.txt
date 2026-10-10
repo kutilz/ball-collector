@@ -1,7 +1,7 @@
 # ─────────────────────────────────────────────────────────────
-# Dependensi OPSIONAL untuk backend deteksi AI (YOLOv8).
-# Hanya perlu dipasang bila ingin memakai mode "AI — YOLO" di UI.
-# Backend HSV default TIDAK butuh paket ini.
+# Dependensi OPSIONAL untuk backend deteksi AI (YOLOv8 & YOLO-World).
+# Hanya perlu dipasang bila ingin memakai mode "AI — YOLO" atau
+# "AI — YOLO-World" di UI. Backend HSV default TIDAK butuh paket ini.
 #
 #   pip install -r requirements-ai.txt
 #
@@ -10,3 +10,8 @@
 # panduan PyTorch (https://pytorch.org) memilih wheel yang sesuai.
 # ─────────────────────────────────────────────────────────────
 ultralytics>=8.0.0
+
+# Text encoder CLIP untuk prompt YOLO-World. Dipasang dari arsip zip supaya
+# tidak butuh git (tanpa ini, ultralytics mencoba `pip install git+...`).
+# Bobot CLIP (~340 MB) diunduh otomatis saat YOLO-World pertama dipakai.
+clip @ https://github.com/ultralytics/CLIP/archive/refs/heads/main.zip

@@ -76,8 +76,10 @@ const el = {
     // Sensor: mecanum
     driveVec: $("drive-vec"), rotArc: $("rot-arc"),
     cmdVx: $("cmd-vx"), cmdVy: $("cmd-vy"), cmdOmega: $("cmd-omega"),
-    // Detektor bola (HSV vs AI/YOLO)
+    // Detektor bola (HSV vs AI/YOLO vs YOLO-World)
     detectorSeg: $("detector-seg"), detectorStatus: $("detector-status"),
+    worldPromptGroup: $("world-prompt-group"), worldPrompt: $("world-prompt"),
+    btnWorldPrompt: $("btn-world-prompt"),
     // HSV
     hMin: $("h_min"), hMax: $("h_max"), sMin: $("s_min"), sMax: $("s_max"), vMin: $("v_min"), vMax: $("v_max"),
     btnHsvReset: $("btn-hsv-reset"),
@@ -228,11 +230,17 @@ socket.on("hsv_updated", (data) => setSliderValues(data));
 socket.on("detector_state", (data) => {
     applyDetectorState(data.info);
     if (data.ok) {
-        showToast(data.info.backend === "yolo"
-            ? "Detektor AI (YOLO) aktif" : "Detektor HSV aktif", "success");
+        showToast(`${DETECTOR_NAMES[data.info.backend] || "Detektor"} aktif`, "success");
     } else {
         showToast(data.error || "Gagal mengaktifkan detektor AI", "error");
     }
+});
+
+// Hasil penggantian prompt YOLO-World (broadcast ke semua client).
+socket.on("world_prompt_state", (data) => {
+    applyDetectorState(data.info);
+    if (data.ok) showToast(`Prompt YOLO-World: "${data.info.world_prompt}"`, "success");
+    else showToast(data.error || "Gagal mengganti prompt YOLO-World", "error");
 });
 
 socket.on("mode_changed", (data) => {
@@ -400,29 +408,43 @@ function setSliderValues(hsv) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// DETEKTOR BOLA — pilih backend HSV vs AI (YOLO)
+// DETEKTOR BOLA — pilih backend HSV vs AI (YOLO / YOLO-World)
 // ═══════════════════════════════════════════════════════════════
-// Sorot tombol segmented sesuai backend aktif.
+const DETECTOR_NAMES = {
+    hsv: "Detektor HSV", yolo: "Detektor AI (YOLO)", yoloworld: "Detektor AI (YOLO-World)",
+};
+
+// Sorot tombol segmented sesuai backend aktif; input prompt hanya untuk YOLO-World.
 function highlightDetector(backend) {
     if (!el.detectorSeg) return;
     el.detectorSeg.querySelectorAll(".seg-btn").forEach(b =>
         b.classList.toggle("active", b.dataset.detector === backend));
+    if (el.worldPromptGroup) el.worldPromptGroup.classList.toggle("hidden", backend !== "yoloworld");
 }
 
-// Terapkan info backend dari server ke UI (tombol + baris status).
-// info: {backend, yolo_ready, yolo_model, yolo_error}
+// Terapkan info backend dari server ke UI (tombol + prompt + baris status).
+// info: {backend, requested, error, yolo_model, world_model, world_prompt, ...}
 function applyDetectorState(info) {
     if (!info) return;
     highlightDetector(info.backend);
+    // Jangan timpa prompt yang sedang diketik operator.
+    if (el.worldPrompt && document.activeElement !== el.worldPrompt) {
+        el.worldPrompt.value = info.world_prompt || "";
+    }
     const st = el.detectorStatus;
     if (!st) return;
     st.classList.remove("is-error", "is-ai");
-    if (info.yolo_error) {
-        st.textContent = "AI tidak tersedia: " + info.yolo_error;
+    if (info.error) {
+        st.textContent = "AI tidak tersedia: " + info.error;
         st.classList.add("is-error");
     } else if (info.backend === "yolo") {
         st.textContent = `Mode AI aktif — model ${info.yolo_model || "YOLO"}. `
             + `Atur ambang di slider "Confidence AI".`;
+        st.classList.add("is-ai");
+    } else if (info.backend === "yoloworld") {
+        st.textContent = `Mode AI aktif — YOLO-World (${info.world_model}) mencari `
+            + `"${info.world_prompt}". Skor YOLO-World cenderung rendah; turunkan `
+            + `slider "Confidence AI" bila bola jarang terdeteksi.`;
         st.classList.add("is-ai");
     } else {
         st.textContent = "Mode warna HSV aktif — atur rentang warna di bawah.";
@@ -754,13 +776,13 @@ el.btnHsvReset.addEventListener("click", () => {
     showToast("HSV direset ke default", "info");
 });
 
-// ── Pemilih detektor bola (HSV vs AI/YOLO) ──────────────────────
+// ── Pemilih detektor bola (HSV vs AI/YOLO vs YOLO-World) ────────
 if (el.detectorSeg) {
     el.detectorSeg.querySelectorAll(".seg-btn").forEach(btn => {
         btn.addEventListener("click", () => {
             const backend = btn.dataset.detector;
             highlightDetector(backend);   // optimistik; server konfirmasi via detector_state
-            if (backend === "yolo" && el.detectorStatus) {
+            if (backend !== "hsv" && el.detectorStatus) {
                 el.detectorStatus.classList.remove("is-error");
                 el.detectorStatus.classList.add("is-ai");
                 el.detectorStatus.textContent =
@@ -769,6 +791,18 @@ if (el.detectorSeg) {
             socket.emit("set_detector", { backend });
         });
     });
+}
+
+// ── Prompt teks YOLO-World ──────────────────────────────────────
+function applyWorldPrompt() {
+    const prompt = el.worldPrompt.value.trim();
+    if (!prompt) { showToast("Prompt YOLO-World tidak boleh kosong", "error"); return; }
+    socket.emit("set_world_prompt", { prompt });
+    el.worldPrompt.blur();   // lepas fokus supaya nilai dari server bisa tampil
+}
+if (el.btnWorldPrompt && el.worldPrompt) {
+    el.btnWorldPrompt.addEventListener("click", applyWorldPrompt);
+    el.worldPrompt.addEventListener("keydown", (e) => { if (e.key === "Enter") applyWorldPrompt(); });
 }
 
 el.btnCalibReset.addEventListener("click", () => socket.emit("reset_calibration", {}));
