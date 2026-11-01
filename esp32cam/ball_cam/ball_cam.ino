@@ -10,6 +10,12 @@
 #include "esp_camera.h"
 #include <WiFi.h>
 #include <WebServer.h>
+#include <ESPmDNS.h>
+#include "esp_http_server.h"
+#include <ArduinoOTA.h>
+
+// Nama di jaringan: http://ballcollector.local dan nama perangkat di router/hotspot
+#define HOSTNAME "ballcollector"
 
 // === KONFIGURASI DEBUG ===
 #define DEBUG 1
@@ -27,12 +33,22 @@
 // ============================================================================
 // KONFIGURASI WIFI
 // ============================================================================
-// Ganti dengan SSID dan password jaringan WiFi Anda
-#define WIFI_SSID     "NamaWiFi_Anda"
-#define WIFI_PASSWORD "PasswordWiFi_Anda"
+// Daftar SSID/password (urut prioritas) ada di wifi_secrets.h (di-gitignore).
+// Kalau belum ada, pakai contoh supaya tetap bisa di-compile.
+#if __has_include("wifi_secrets.h")
+#include "wifi_secrets.h"
+#else
+#include "wifi_secrets.example.h"
+#endif
+const int WIFI_COUNT = sizeof(WIFI_LIST) / sizeof(WIFI_LIST[0]);
 
-// Batas waktu koneksi WiFi (detik)
-#define WIFI_TIMEOUT_SEC  15
+// Password OTA (upload firmware lewat WiFi), diisi di wifi_secrets.h
+#ifndef OTA_PASSWORD
+#define OTA_PASSWORD "ballcollector"
+#endif
+
+// Batas waktu koneksi per jaringan (detik)
+#define WIFI_TIMEOUT_SEC  10
 
 // Interval pengecekan ulang koneksi WiFi (ms)
 #define WIFI_CHECK_INTERVAL 10000
@@ -98,6 +114,10 @@ char arduinoTelemetry[128]  = "TEL:0.0,0";
 char telemetryBuf[128];
 uint8_t telemetryIdx        = 0;
 
+// --- Pesan terakhir dari Arduino (baris "MSG:...", mis. hasil kalibrasi) ---
+char arduinoMsg[128]        = "";
+uint32_t arduinoMsgId       = 0;   // Naik tiap ada pesan baru, untuk halaman /tune
+
 // --- Status LED flash ---
 bool ledFlashOn = false;
 
@@ -159,15 +179,14 @@ bool initKamera() {
 // ============================================================================
 // KONEKSI WIFI
 // ============================================================================
-bool connectWifi() {
+// Coba satu jaringan sampai terhubung atau timeout.
+bool cobaWifi(const WifiCred &w) {
   DBG_PRINT(F("Menghubungkan ke WiFi: "));
-  DBG_PRINTLN(WIFI_SSID);
+  DBG_PRINTLN(w.ssid);
 
-  WiFi.mode(WIFI_STA);           // Mode station (client)
-  WiFi.setSleep(false);           // Nonaktifkan power save untuk latensi rendah
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  WiFi.disconnect();
+  WiFi.begin(w.ssid, (w.pass && w.pass[0]) ? w.pass : nullptr);
 
-  // Tunggu koneksi dengan timeout
   unsigned long startAttempt = millis();
   while (WiFi.status() != WL_CONNECTED) {
     if (millis() - startAttempt >= WIFI_TIMEOUT_SEC * 1000UL) {
@@ -177,9 +196,63 @@ bool connectWifi() {
     delay(500);
     DBG_PRINT(F("."));
   }
+  return true;
+}
+
+// Kedip LED flash n kali (pendek supaya tidak menyilaukan).
+void kedipFlash(int n, int onMs = 80, int offMs = 350) {
+  for (int i = 0; i < n; i++) {
+    digitalWrite(LED_FLASH_PIN, HIGH);
+    delay(onMs);
+    digitalWrite(LED_FLASH_PIN, LOW);
+    delay(offMs);
+  }
+  digitalWrite(LED_FLASH_PIN, ledFlashOn ? HIGH : LOW);
+}
+
+// Scan dulu, lalu sambung ke jaringan terlihat dengan prioritas tertinggi
+// (urutan WIFI_LIST). Kalau gagal, lanjut ke prioritas berikutnya.
+// Indikator: flash kedip 1/2/3x = terhubung ke WIFI_LIST[0/1/2];
+// satu nyala panjang = tidak ada yang tersambung.
+bool connectWifi() {
+  WiFi.setHostname(HOSTNAME);    // Harus sebelum mode()/begin()
+  WiFi.mode(WIFI_STA);           // Mode station (client)
+  WiFi.setSleep(false);           // Nonaktifkan power save untuk latensi rendah
+
+  DBG_PRINTLN(F("Scan WiFi..."));
+  int n = WiFi.scanNetworks();
+  int idx = -1;
+  for (int i = 0; i < WIFI_COUNT && idx < 0; i++) {
+    bool terlihat = false;
+    for (int j = 0; j < n; j++) {
+      if (WiFi.SSID(j) == WIFI_LIST[i].ssid) { terlihat = true; break; }
+    }
+    if (!terlihat) {
+      DBG_PRINT(F("Tidak terlihat: "));
+      DBG_PRINTLN(WIFI_LIST[i].ssid);
+      continue;
+    }
+    if (cobaWifi(WIFI_LIST[i])) idx = i;
+  }
+  WiFi.scanDelete();
+
+  if (idx < 0) {
+    DBG_PRINTLN(F("GAGAL: tidak ada WiFi dari daftar yang bisa disambung."));
+    kedipFlash(1, 1000, 200);
+    return false;
+  }
+  kedipFlash(idx + 1);
 
   DBG_PRINTLN();
-  DBG_PRINTLN(F("WiFi terhubung!"));
+  DBG_PRINT(F("WiFi terhubung ke "));
+  DBG_PRINTLN(WiFi.SSID());
+
+  // mDNS: robot bisa dibuka lewat http://ballcollector.local tanpa tahu IP
+  MDNS.end();
+  if (MDNS.begin(HOSTNAME)) {
+    MDNS.addService("http", "tcp", 80);
+    DBG_PRINTLN(F("mDNS: http://" HOSTNAME ".local"));
+  }
   DBG_PRINT(F("Alamat IP: "));
   DBG_PRINTLN(WiFi.localIP());
   DBG_PRINT(F("RSSI: "));
@@ -234,7 +307,8 @@ void handleRoot() {
     "</div>"
     "<div class='card'>"
     "<h2 style='color:#00d4ff;'>&#x1F4CA; Info</h2>"
-    "<p><a href='/status'>Status JSON</a> | "
+    "<p><a href='/tune'>Kalibrasi &amp; Tuning MPU</a> | "
+    "<a href='/status'>Status JSON</a> | "
     "<a href='/stream'>Stream Langsung</a></p>"
   );
 
@@ -255,63 +329,77 @@ void handleRoot() {
 }
 
 // ============================================================================
-// HANDLER: MJPEG STREAMING (/stream)
+// STREAM MJPEG (port 81, task terpisah)
 // ============================================================================
-// Mengirim video sebagai aliran MJPEG (multipart/x-mixed-replace).
-// Setiap frame dikirim sebagai bagian JPEG terpisah.
-void handleStream() {
-  WiFiClient client = server.client();
+// Stream dilayani esp_http_server di task FreeRTOS sendiri, jadi WebServer
+// port 80 (/cmd, /tune, /tel) tetap responsif selama video ditonton.
+// JANGAN pakai Serial di sini: Serial = UART ke Arduino, tulisan dari dua task
+// bisa menyela baris perintah "CMD:..." dan merusaknya.
+#define STREAM_PORT 81
+#define PART_BOUNDARY "123456789000000000000987654321"
+static const char* STREAM_CONTENT_TYPE = "multipart/x-mixed-replace;boundary=" PART_BOUNDARY;
+static const char* STREAM_BOUNDARY = "\r\n--" PART_BOUNDARY "\r\n";
+static const char* STREAM_PART = "Content-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n";
 
-  // Header MJPEG multipart
-  String response = F(
-    "HTTP/1.1 200 OK\r\n"
-    "Content-Type: multipart/x-mixed-replace; boundary=frame\r\n"
-    "Access-Control-Allow-Origin: *\r\n"
-    "Cache-Control: no-cache, no-store, must-revalidate\r\n"
-    "\r\n"
-  );
-  client.print(response);
+esp_err_t streamHandler(httpd_req_t *req) {
+  esp_err_t res = httpd_resp_set_type(req, STREAM_CONTENT_TYPE);
+  if (res != ESP_OK) return res;
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-cache, no-store, must-revalidate");
 
-  DBG_PRINTLN(F("Client streaming terhubung."));
-
-  // Loop streaming - terus kirim frame sampai client disconnect
-  while (client.connected()) {
+  char part[64];
+  while (true) {
     camera_fb_t *fb = esp_camera_fb_get();
     if (!fb) {
-      DBG_PRINTLN(F("GAGAL ambil frame dari kamera!"));
-      delay(100);
+      vTaskDelay(pdMS_TO_TICKS(100));
       continue;
     }
 
-    // Kirim boundary dan header untuk frame ini
-    String partHeader = F("--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ");
-    partHeader += String(fb->len);
-    partHeader += F("\r\n\r\n");
-
-    client.print(partHeader);
-    client.write(fb->buf, fb->len);
-    client.print(F("\r\n"));
-
-    // Lepaskan frame buffer agar bisa dipakai lagi
+    size_t hlen = snprintf(part, sizeof(part), STREAM_PART, (unsigned)fb->len);
+    res = httpd_resp_send_chunk(req, STREAM_BOUNDARY, strlen(STREAM_BOUNDARY));
+    if (res == ESP_OK) res = httpd_resp_send_chunk(req, part, hlen);
+    if (res == ESP_OK) res = httpd_resp_send_chunk(req, (const char *)fb->buf, fb->len);
     esp_camera_fb_return(fb);
+    if (res != ESP_OK) break;  // Client putus
 
-    // Update counter frame
+    // Update counter frame & FPS tiap detik
     frameCount++;
     fpsFrameCount++;
-
-    // Hitung FPS setiap detik
     unsigned long now = millis();
     if (now - lastFpsCalc >= 1000) {
       currentFps = (float)fpsFrameCount * 1000.0f / (float)(now - lastFpsCalc);
       fpsFrameCount = 0;
       lastFpsCalc = now;
     }
-
-    // Yield agar WiFi stack dan watchdog ESP32 tidak timeout
-    delay(1);
   }
+  return res;
+}
 
-  DBG_PRINTLN(F("Client streaming terputus."));
+void startStreamServer() {
+  httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
+  cfg.server_port = STREAM_PORT;
+  cfg.ctrl_port = 32769;  // Default 32768 bisa bentrok dengan instance lain
+
+  httpd_uri_t uri;
+  memset(&uri, 0, sizeof(uri));
+  uri.uri = "/stream";
+  uri.method = HTTP_GET;
+  uri.handler = streamHandler;
+
+  httpd_handle_t h = NULL;
+  if (httpd_start(&h, &cfg) == ESP_OK) {
+    httpd_register_uri_handler(h, &uri);
+    DBG_PRINTLN(F("Stream server aktif di port 81."));
+  } else {
+    DBG_PRINTLN(F("GAGAL start stream server port 81!"));
+  }
+}
+
+// /stream di port 80 dialihkan ke port 81 (kompatibel dengan link lama)
+void handleStream() {
+  server.sendHeader("Location",
+                    "http://" + WiFi.localIP().toString() + ":" + String(STREAM_PORT) + "/stream");
+  server.send(302, "text/plain", "");
 }
 
 // ============================================================================
@@ -354,12 +442,156 @@ void handleStatus() {
   json += "\"fps\":" + String(currentFps, 1) + ",";
   json += "\"total_frames\":" + String(frameCount) + ",";
   json += "\"free_heap\":" + String(ESP.getFreeHeap()) + ",";
-  json += "\"wifi_ssid\":\"" + String(WIFI_SSID) + "\",";
+  json += "\"wifi_ssid\":\"" + WiFi.SSID() + "\",";
   json += "\"flash_led\":" + String(ledFlashOn ? "true" : "false") + ",";
   json += "\"arduino_telemetry\":\"" + String(arduinoTelemetry) + "\"";
   json += "}";
 
   server.send(200, "application/json", json);
+}
+
+// ============================================================================
+// HANDLER: TELEMETRI RINGAN (/tel) untuk halaman /tune
+// ============================================================================
+void handleTel() {
+  String json = "{\"tel\":\"" + String(arduinoTelemetry) + "\",";
+  json += "\"msg\":\"" + String(arduinoMsg) + "\",";
+  json += "\"msgId\":" + String(arduinoMsgId) + ",";
+  json += "\"ssid\":\"" + WiFi.SSID() + "\",";
+  json += "\"rssi\":" + String(WiFi.RSSI()) + "}";
+  server.send(200, "application/json", json);
+}
+
+// ============================================================================
+// HANDLER: HALAMAN KALIBRASI & TUNING MPU (/tune)
+// ============================================================================
+// Halaman tanpa stream kamera (stream ada di port 81, task terpisah).
+const char TUNE_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tuning MPU</title>
+<style>
+body{font-family:system-ui,sans-serif;background:#111827;color:#e5e7eb;margin:0;padding:12px;max-width:720px;margin:auto}
+h1{font-size:1.2em;margin:4px 0 10px}h2{font-size:1em;margin:0 0 8px;color:#93c5fd}
+.card{background:#1f2937;border-radius:10px;padding:12px;margin-bottom:12px}
+.big{font-size:2.4em;font-weight:700;font-variant-numeric:tabular-nums}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.kv{font-variant-numeric:tabular-nums;color:#9ca3af;font-size:.9em}
+button{background:#374151;color:#fff;border:0;border-radius:8px;padding:10px 14px;font-size:1em;touch-action:none;user-select:none}
+button:active,button.on{background:#2563eb}.warn{background:#b45309}.stop{background:#b91c1c}
+.pad{display:grid;grid-template-columns:repeat(3,64px);gap:6px}.pad button{height:56px;padding:0}
+input[type=number]{width:70px;background:#111827;color:#fff;border:1px solid #4b5563;border-radius:6px;padding:6px}
+canvas{width:100%;height:160px;background:#111827;border-radius:8px}
+#msg{color:#fde68a;min-height:1.2em}#log{font-size:.8em;color:#9ca3af;max-height:110px;overflow:auto;white-space:pre-wrap}
+.ok{color:#86efac}.bad{color:#fca5a5}small{color:#9ca3af}
+</style></head><body>
+<h1>Kalibrasi &amp; Tuning MPU</h1>
+
+<div class="card">
+<div class="row" style="justify-content:space-between">
+<div><div class="big" id="hd">--</div><div class="kv">heading (&deg;)</div></div>
+<div class="kv">target <b id="tg">--</b>&deg;<br>rate <b id="rt">--</b>&deg;/s<br>hold <b id="ho">--</b> &middot; turn <b id="tu">--</b><br>arah sensor <b id="sg">--</b></div>
+</div>
+<canvas id="cv" width="680" height="160"></canvas>
+<small>Biru = heading, kuning = target. <span id="net"></span></small>
+<div id="msg"></div>
+</div>
+
+<div class="card">
+<h2>1. Kalibrasi</h2>
+<div class="row">
+<button onclick="send('CAL')">Kalibrasi gyro</button><small>robot diam total ~1 detik</small></div>
+<div class="row" style="margin-top:8px">
+<button class="warn" onclick="if(confirm('Robot akan berputar ~0,7 detik. Robot di lantai?'))send('DIRCAL')">Deteksi arah putar</button><small>robot di lantai, akan berputar</small></div>
+<div class="row" style="margin-top:8px">
+<button onclick="send('ZERO')">Nol-kan heading</button>
+<button onclick="send('GET')">Baca setting</button></div>
+</div>
+
+<div class="card">
+<h2>2. Gerak (tahan tombol)</h2>
+<div class="row" style="gap:16px;align-items:flex-start">
+<div class="pad">
+<button data-m="0,0,-1">&#x21BA;</button><button data-m="1,0,0">&#x25B2;</button><button data-m="0,0,1">&#x21BB;</button>
+<button data-m="0,1,0">&#x25C0;</button><button class="stop" onclick="stopNow()">&#x25A0;</button><button data-m="0,-1,0">&#x25B6;</button>
+<span></span><button data-m="-1,0,0">&#x25BC;</button><span></span>
+</div>
+<div>
+<label>Kecepatan <b id="spv">120</b><br><input id="sp" type="range" min="40" max="255" value="120" oninput="spv.textContent=this.value"></label><br><br>
+<label><input type="checkbox" id="hold" onchange="send('HOLD:'+(this.checked?1:0))"> Heading hold (jalan lurus pakai MPU)</label><br>
+<small>Keyboard: W/S maju-mundur, A/D geser, Q/E putar, spasi stop</small>
+</div></div>
+<div class="row" style="margin-top:10px">
+<button onclick="send('TURN:-90')">-90&deg;</button><button onclick="send('TURN:-45')">-45&deg;</button>
+<button onclick="send('TURN:45')">+45&deg;</button><button onclick="send('TURN:90')">+90&deg;</button><button onclick="send('TURN:180')">180&deg;</button>
+</div>
+<div class="row" style="margin-top:10px">
+<button onclick="ujiLurus()">Uji lurus</button><input id="dur" type="number" value="3" min="1" max="10" step="1"><small>detik, maju dengan kecepatan di atas</small>
+</div>
+<div id="uji" class="kv"></div>
+</div>
+
+<div class="card">
+<h2>3. Tuning gain</h2>
+<div class="row">
+<label>Kp <input id="kp" type="number" step="0.1" value="4"></label>
+<label>Kd <input id="kd" type="number" step="0.05" value="0.3"></label>
+<label>Kp putar <input id="kpt" type="number" step="0.1" value="3"></label>
+<button onclick="send('GAIN:'+kp.value+','+kd.value+','+kpt.value)">Terapkan &amp; simpan</button>
+</div>
+<small>Robot berkelok-kelok/gemetar saat jalan lurus &rarr; turunkan Kp atau naikkan Kd. Masih melenceng pelan &rarr; naikkan Kp. Putar kelewatan &rarr; turunkan Kp putar / naikkan Kd.</small>
+</div>
+
+<div class="card"><h2>Log</h2><div id="log"></div></div>
+
+<script>
+const $=id=>document.getElementById(id);
+let T={h:0,r:0,t:0,hold:0,turn:0,sign:0},lastMsg=-1,hist=[],driveTimer=null,uji=null,holdInit=false;
+function log(s){const l=$('log');l.textContent=new Date().toLocaleTimeString()+'  '+s+'\n'+l.textContent;}
+function send(q){log('> '+q);return fetch('/cmd?q='+encodeURIComponent(q)).catch(()=>log('! gagal kirim'));}
+function cmd(vx,vy,w){fetch('/cmd?q='+encodeURIComponent('CMD:'+vx+','+vy+','+w)).catch(()=>{});}
+function startDrive(m){stopDrive(false);const s=+$('sp').value;const v=m.split(',').map(x=>Math.round(+x*s));
+ cmd(...v);driveTimer=setInterval(()=>cmd(...v),150);}
+function stopDrive(sendStop=true){if(driveTimer){clearInterval(driveTimer);driveTimer=null;}if(sendStop){cmd(0,0,0);setTimeout(()=>cmd(0,0,0),80);}}
+function stopNow(){if(uji){clearInterval(uji.timer);uji=null;}stopDrive(true);}
+document.querySelectorAll('[data-m]').forEach(b=>{
+ b.addEventListener('pointerdown',e=>{e.preventDefault();b.setPointerCapture(e.pointerId);startDrive(b.dataset.m);});
+ ['pointerup','pointercancel','lostpointercapture'].forEach(ev=>b.addEventListener(ev,()=>stopDrive(true)));});
+const KEYS={w:'1,0,0',s:'-1,0,0',a:'0,1,0',d:'0,-1,0',q:'0,0,-1',e:'0,0,1'};let keyDown=null;
+addEventListener('keydown',e=>{if(e.target.tagName==='INPUT')return;const k=e.key.toLowerCase();
+ if(k===' '){e.preventDefault();stopNow();return;}if(KEYS[k]&&keyDown!==k){keyDown=k;startDrive(KEYS[k]);}});
+addEventListener('keyup',e=>{if(e.key.toLowerCase()===keyDown){keyDown=null;stopDrive(true);}});
+addEventListener('blur',()=>stopDrive(true));
+function wrap(a){while(a>180)a-=360;while(a<-180)a+=360;return a;}
+function ujiLurus(){if(uji)return;const s=+$('sp').value,d=+$('dur').value*1000,h0=T.h;let maxDev=0,t0=Date.now();
+ uji={timer:setInterval(()=>{const dev=wrap(T.h-h0);if(Math.abs(dev)>Math.abs(maxDev))maxDev=dev;
+  if(Date.now()-t0>=d){clearInterval(uji.timer);uji=null;stopDrive(true);
+   const end=wrap(T.h-h0);$('uji').innerHTML='Selesai: simpangan akhir <b>'+end.toFixed(1)+'&deg;</b>, maks <b>'+maxDev.toFixed(1)+'&deg;</b> (hold '+(T.hold?'ON':'OFF')+')';
+   log('uji lurus: akhir '+end.toFixed(1)+' maks '+maxDev.toFixed(1));return;}
+  cmd(s,0,0);},150)};$('uji').textContent='Berjalan...';}
+function parseCfg(m){const g=k=>{const r=new RegExp(k+'=(-?[\\d.]+)').exec(m);return r?r[1]:null;};
+ if(g('kp'))$('kp').value=g('kp');if(g('kd'))$('kd').value=g('kd');if(g('kpTurn'))$('kpt').value=g('kpTurn');}
+function draw(){const c=$('cv'),x=c.getContext('2d'),W=c.width,H=c.height;x.clearRect(0,0,W,H);if(hist.length<2)return;
+ let lo=Infinity,hi=-Infinity;hist.forEach(p=>{lo=Math.min(lo,p.h,p.t);hi=Math.max(hi,p.h,p.t);});
+ if(hi-lo<10){const m=(hi+lo)/2;lo=m-5;hi=m+5;}const pad=(hi-lo)*.1;lo-=pad;hi+=pad;
+ const Y=v=>H-(v-lo)/(hi-lo)*H,X=i=>i/(150-1)*W;
+ x.fillStyle='#6b7280';x.font='11px sans-serif';x.fillText(hi.toFixed(0)+'°',4,12);x.fillText(lo.toFixed(0)+'°',4,H-4);
+ [['t','#facc15'],['h','#60a5fa']].forEach(([k,col])=>{x.strokeStyle=col;x.lineWidth=2;x.beginPath();
+  hist.forEach((p,i)=>i?x.lineTo(X(i),Y(p[k])):x.moveTo(X(i),Y(p[k])));x.stroke();});}
+async function poll(){try{const r=await fetch('/tel');const j=await r.json();const p=j.tel.slice(4).split(',').map(Number);
+ T={h:p[0]||0,r:p[2]||0,t:p[3]||0,hold:p[4]||0,turn:p[5]||0,sign:p[6]||0};
+ $('hd').textContent=T.h.toFixed(1);$('tg').textContent=T.t.toFixed(1);$('rt').textContent=T.r.toFixed(1);
+ $('ho').textContent=T.hold?'ON':'OFF';$('tu').textContent=T.turn?'jalan':'-';
+ $('sg').innerHTML=T.sign?'<span class="ok">OK ('+T.sign+')</span>':'<span class="bad">belum (DIRCAL)</span>';
+ if(!holdInit&&p.length>4){$('hold').checked=!!T.hold;holdInit=true;}
+ $('net').textContent='WiFi '+j.ssid+' ('+j.rssi+' dBm)';
+ if(j.msgId!==lastMsg){if(lastMsg>=0||j.msg){$('msg').textContent=j.msg;log('< '+j.msg);}if(j.msg.startsWith('CFG'))parseCfg(j.msg);lastMsg=j.msgId;}
+ hist.push({h:T.h,t:T.t});if(hist.length>150)hist.shift();draw();}catch(e){$('net').textContent='koneksi putus...';}
+ setTimeout(poll,200);}
+poll();setTimeout(()=>send('GET'),500);
+</script></body></html>)rawliteral";
+
+void handleTune() {
+  server.send_P(200, "text/html", TUNE_HTML);
 }
 
 // ============================================================================
@@ -412,6 +644,10 @@ void bacaTelemetriArduino() {
         if (strncmp(telemetryBuf, "TEL:", 4) == 0) {
           strncpy(arduinoTelemetry, telemetryBuf, sizeof(arduinoTelemetry) - 1);
           arduinoTelemetry[sizeof(arduinoTelemetry) - 1] = '\0';
+        } else if (strncmp(telemetryBuf, "MSG:", 4) == 0) {
+          strncpy(arduinoMsg, telemetryBuf + 4, sizeof(arduinoMsg) - 1);
+          arduinoMsg[sizeof(arduinoMsg) - 1] = '\0';
+          arduinoMsgId++;
         }
 
         telemetryIdx = 0;
@@ -435,17 +671,10 @@ void cekKoneksiWifi(unsigned long now) {
   lastWifiCheck = now;
 
   if (WiFi.status() != WL_CONNECTED) {
+    // Blocking beberapa detik; aman karena Arduino menghentikan motor sendiri
+    // (watchdog 500 ms) kalau perintah berhenti datang.
     DBG_PRINTLN(F("WiFi terputus! Mencoba reconnect..."));
-    WiFi.disconnect();
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-
-    // Tunggu sebentar (non-blocking pada iterasi berikutnya)
-    unsigned long start = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - start < 5000) {
-      delay(250);
-    }
-
-    if (WiFi.status() == WL_CONNECTED) {
+    if (connectWifi()) {
       DBG_PRINT(F("WiFi terhubung kembali! IP: "));
       DBG_PRINTLN(WiFi.localIP());
     } else {
@@ -487,12 +716,22 @@ void setup() {
   server.on("/cmd",    HTTP_GET, handleCommand);
   server.on("/status", HTTP_GET, handleStatus);
   server.on("/led",    HTTP_GET, handleLed);
+  server.on("/tel",    HTTP_GET, handleTel);
+  server.on("/tune",   HTTP_GET, handleTune);
   server.onNotFound(handleNotFound);
 
   // Izinkan CORS untuk akses dari browser/aplikasi lain
   server.enableCORS(true);
 
   server.begin();
+  startStreamServer();
+
+  // --- OTA: update firmware lewat WiFi (tanpa USB-TTL & jumper IO0) ---
+  // Motor aman selama update: perintah berhenti -> watchdog Arduino stop motor.
+  ArduinoOTA.setHostname(HOSTNAME);
+  ArduinoOTA.setPassword(OTA_PASSWORD);
+  ArduinoOTA.onStart([]() { esp_camera_deinit(); });  // Bebaskan RAM & DMA kamera
+  ArduinoOTA.begin();
 
   bootTime    = millis();
   lastFpsCalc = millis();
@@ -500,20 +739,14 @@ void setup() {
   DBG_PRINTLN(F("Web server aktif!"));
   DBG_PRINTLN(F("Endpoint tersedia:"));
   DBG_PRINTLN(F("  /        - Halaman kontrol"));
-  DBG_PRINTLN(F("  /stream  - MJPEG live stream"));
+  DBG_PRINTLN(F("  :81/stream - MJPEG live stream (/stream dialihkan ke sini)"));
   DBG_PRINTLN(F("  /cmd?q=  - Kirim perintah ke robot"));
   DBG_PRINTLN(F("  /status  - Status JSON"));
   DBG_PRINTLN(F("  /led     - Kontrol LED flash"));
+  DBG_PRINTLN(F("  /tune    - Kalibrasi & tuning MPU"));
   DBG_PRINT(F("Akses di: http://"));
   DBG_PRINTLN(WiFi.localIP());
-
-  // Kedipkan LED flash tanda siap
-  for (int i = 0; i < 3; i++) {
-    digitalWrite(LED_FLASH_PIN, HIGH);
-    delay(100);
-    digitalWrite(LED_FLASH_PIN, LOW);
-    delay(100);
-  }
+  // (Kedip "siap" lama dihapus: kedip flash sekarang menandakan WiFi mana yang tersambung.)
 }
 
 // ============================================================================
@@ -524,6 +757,7 @@ void loop() {
 
   // Layani permintaan HTTP
   server.handleClient();
+  ArduinoOTA.handle();
 
   // Baca telemetri dari Arduino
   bacaTelemetriArduino();

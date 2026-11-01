@@ -16,15 +16,77 @@ Dua kanal yang DIPISAH:
 
 Pemisahan ini memungkinkan: deteksi di laptop (webcam/video) sambil
 robot fisik tetap bergerak via ESP32.
+
+IP "auto" (atau kosong) = cari robot otomatis: mDNS ballcollector.local dulu,
+lalu scan subnet /24 laptop untuk perangkat yang menjawab /tel.
 """
 
 import collections
+import concurrent.futures
+import socket
 import threading
 import time
 import cv2
 import numpy as np
 import requests
 import config
+
+AUTO_IP = "auto"
+
+
+def _is_auto(ip):
+    return not ip or ip.strip().lower() == AUTO_IP
+
+
+def _is_robot(host, timeout):
+    """True kalau host menjawab /tel seperti firmware ESP32-CAM robot."""
+    try:
+        resp = requests.get(f"http://{host}:{config.CMD_PORT}/tel", timeout=timeout)
+        return resp.status_code == 200 and "tel" in resp.json()
+    except (requests.RequestException, ValueError):
+        return False
+
+
+def _local_subnets():
+    """Prefix /24 interface laptop; interface default route diurutkan pertama."""
+    ips = []
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))  # Tidak kirim paket, cuma pilih interface
+            ips.append(s.getsockname()[0])
+    except OSError:
+        pass
+    try:
+        ips += socket.gethostbyname_ex(socket.gethostname())[2]
+    except OSError:
+        pass
+    subnets = []
+    for ip in ips:
+        if ip.startswith(("127.", "169.254.")):
+            continue
+        base = ip.rsplit(".", 1)[0]
+        if base not in subnets:
+            subnets.append(base)
+    return subnets
+
+
+def discover_robot(hint=None):
+    """Cari IP ESP32-CAM robot. hint = IP terakhir yang diketahui (dicek dulu)."""
+    if hint and not _is_auto(hint) and _is_robot(hint, 1.0):
+        return hint
+    try:
+        ip = socket.gethostbyname(config.ROBOT_HOSTNAME)
+        if _is_robot(ip, 2.0):
+            return ip
+    except OSError:
+        pass
+    with concurrent.futures.ThreadPoolExecutor(max_workers=64) as ex:
+        for base in _local_subnets():
+            hosts = [f"{base}.{i}" for i in range(1, 255)]
+            for host, ok in zip(hosts, ex.map(lambda h: _is_robot(h, 0.5), hosts)):
+                if ok:
+                    return host
+    return None
 
 
 class RobotComms:
@@ -50,6 +112,7 @@ class RobotComms:
 
         # ── Kanal command (robot asli) ───────────────────────
         self._robot_ip = config.ROBOT_IP
+        self._last_found_ip = None         # Hasil discovery terakhir (dicek dulu)
         self._drive_robot = config.DRIVE_ROBOT
         self._robot_online = False         # ESP32 command terakhir sukses?
 
@@ -102,11 +165,33 @@ class RobotComms:
                 pass
         return self.start_source()
 
+    def _resolve_auto(self):
+        """Isi IP yang masih 'auto' dengan hasil discovery. False kalau tidak ketemu.
+
+        Blocking beberapa detik (seperti cek awal stream); hanya dipanggil saat
+        connect/aktifkan drive, bukan di jalur command.
+        """
+        if not (_is_auto(self._esp32_ip) or _is_auto(self._robot_ip)):
+            return True
+        found = discover_robot(hint=self._last_found_ip)
+        if not found:
+            self._last_error = (f"Robot tidak ditemukan (coba {config.ROBOT_HOSTNAME} "
+                                "dan scan subnet). Laptop & robot satu WiFi?")
+            return False
+        self._last_found_ip = found
+        if _is_auto(self._esp32_ip):
+            self._esp32_ip = found
+        if _is_auto(self._robot_ip):
+            self._robot_ip = found
+        return True
+
     def set_drive(self, enabled, robot_ip=None):
         """Aktif/nonaktifkan pengiriman command ke robot asli."""
         self._drive_robot = bool(enabled)
         if robot_ip:
             self._robot_ip = robot_ip
+        if self._drive_robot and _is_auto(self._robot_ip):
+            self._resolve_auto()
         if self._drive_robot:
             self._ensure_command_worker()
             self._start_status_poll()
@@ -124,10 +209,12 @@ class RobotComms:
     def _command_target(self):
         """IP tujuan command, atau None jika command tidak boleh dikirim."""
         if self._source == "esp32":
-            return self._esp32_ip
-        if self._drive_robot:
-            return self._robot_ip
-        return None
+            target = self._esp32_ip
+        elif self._drive_robot:
+            target = self._robot_ip
+        else:
+            return None
+        return None if _is_auto(target) else target  # 'auto' belum ketemu
 
     # ═════════════════════════════════════════════════════════
     # Mulai / hentikan sumber video
@@ -145,6 +232,10 @@ class RobotComms:
         # Command worker selalu hidup (idle bila tak ada perintah) agar
         # heartbeat & STOP failsafe siap kapan pun.
         self._ensure_command_worker()
+
+        if self._source == "esp32" and _is_auto(self._esp32_ip):
+            if not self._resolve_auto():
+                return False
 
         if self._source == "esp32":
             ok = self._start_mjpeg_stream()

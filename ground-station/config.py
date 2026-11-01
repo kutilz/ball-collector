@@ -10,7 +10,8 @@ import os
 # ═══════════════════════════════════════════════════════════════
 # Koneksi ESP32-CAM
 # ═══════════════════════════════════════════════════════════════
-ESP32_CAM_IP = "192.168.4.1"       # IP default AP ESP32-CAM
+ESP32_CAM_IP = "auto"              # "auto" = cari otomatis, atau isi IP tetap
+ROBOT_HOSTNAME = "ballcollector.local"  # Nama mDNS firmware ESP32-CAM
 STREAM_PORT = 81                    # Port MJPEG stream (:81/stream)
 CMD_PORT = 80                       # Port HTTP command (:80/cmd)
 STREAM_TIMEOUT = 5                  # Timeout koneksi stream (detik)
@@ -39,7 +40,7 @@ WEBCAM_INDEX = 0                    # Indeks device webcam laptop
 #   sumber video webcam/file. Ini bikin "robot jalan beneran" sambil
 #   deteksi tetap di laptop.
 DRIVE_ROBOT = False
-ROBOT_IP = "192.168.4.1"            # IP ESP32-CAM tujuan command (mode drive)
+ROBOT_IP = "auto"                   # IP ESP32-CAM tujuan command ("auto" = cari)
 STATUS_POLL_INTERVAL = 1.0          # Interval polling /status ESP32 (detik)
 
 # ═══════════════════════════════════════════════════════════════
