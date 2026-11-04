@@ -74,12 +74,23 @@
 // ============================================================================
 // KONFIGURASI ARAH MOTOR (FLIP)
 // ============================================================================
-// Ubah ke 'true' jika motor terpasang terbalik.
-// Ini membalik arah putar tanpa perlu tukar kabel.
+// Nilai awal saja. Setelah diatur dari web (perintah FLIP:mask), nilai di EEPROM
+// yang dipakai, jadi tidak perlu upload ulang untuk membalik roda.
 #define FLIP_FL false
 #define FLIP_FR false
 #define FLIP_RL true
 #define FLIP_RR true
+
+// Bit mask flip roda: FL=1, FR=2, RL=4, RR=8
+#define FLIP_MASK_FL 1
+#define FLIP_MASK_FR 2
+#define FLIP_MASK_RL 4
+#define FLIP_MASK_RR 8
+#define FLIP_DEFAULT_MASK ((FLIP_FL ? FLIP_MASK_FL : 0) | (FLIP_FR ? FLIP_MASK_FR : 0) | \
+                           (FLIP_RL ? FLIP_MASK_RL : 0) | (FLIP_RR ? FLIP_MASK_RR : 0))
+// Alamat terpisah dari struct Settings supaya kalibrasi gyro lama tidak hilang.
+#define FLIP_EEPROM_ADDR  64
+#define FLIP_EEPROM_MAGIC 0xF1
 
 // ============================================================================
 // KONSTANTA
@@ -144,6 +155,8 @@ struct Settings {
   uint8_t holdOn;    // Heading hold aktif saat robot jalan
 };
 Settings cfg;
+
+uint8_t flipMask = FLIP_DEFAULT_MASK;
 
 // --- Status kontrol heading ---
 float gyroRate       = 0.0f;   // derajat/detik, konvensi omega
@@ -369,6 +382,7 @@ void bacaSerial() {
 //   CMD:vx,vy,omega   → gerakkan robot (nilai -255 s/d 255)
 //   SERVO:sudut        → atur posisi servo (0-180)
 //   COLLECT            → jalankan sekuens pengumpulan bola
+//   FLIP:mask          → balik arah roda, FL=1 FR=2 RL=4 RR=8 (disimpan di EEPROM)
 void prosesPerintah(const char* cmd) {
   // Watchdog hanya di-reset oleh perintah valid, supaya baris sampah/debug
   // yang ikut masuk UART tidak membuat motor terus jalan.
@@ -482,6 +496,27 @@ void prosesPerintah(const char* cmd) {
     Serial.print(F("MSG:TURN mulai ke "));
     Serial.println(targetHeading, 1);
   }
+  // --- Balik arah roda: FLIP:mask ---
+  else if (strncmp(cmd, "FLIP:", 5) == 0) {
+    int mask = atoi(cmd + 5);
+    if (cmd[5] < '0' || cmd[5] > '9' || mask > 15) {
+      Serial.println(F("MSG:GAGAL FLIP, mask harus 0-15"));
+      return;
+    }
+    turnActive = false;
+    currentVx = currentVy = currentOmega = 0;
+    stopAllMotors();
+    if ((uint8_t)mask != flipMask) {
+      flipMask = (uint8_t)mask;
+      EEPROM.update(FLIP_EEPROM_ADDR, FLIP_EEPROM_MAGIC);
+      EEPROM.update(FLIP_EEPROM_ADDR + 1, flipMask);
+      // Hasil DIRCAL lama bisa tidak berlaku lagi; arah gyro yang salah membuat
+      // heading hold melawan dirinya sendiri. Hold & TURN nonaktif sampai DIRCAL.
+      cfg.gyroSign = 0;
+      simpanSettings();
+    }
+    kirimConfig();
+  }
   // --- Tampilkan konfigurasi: GET ---
   else if (strcmp(cmd, "GET") == 0) {
     kirimConfig();
@@ -509,6 +544,9 @@ void muatSettings() {
   } else {
     DBG_PRINTLN(F("Settings dimuat dari EEPROM."));
   }
+  if (EEPROM.read(FLIP_EEPROM_ADDR) == FLIP_EEPROM_MAGIC) {
+    flipMask = EEPROM.read(FLIP_EEPROM_ADDR + 1) & 0x0F;
+  }
   kirimConfig();
 }
 
@@ -528,7 +566,9 @@ void kirimConfig() {
   Serial.print(F(" kpTurn="));
   Serial.print(cfg.kpTurn, 2);
   Serial.print(F(" hold="));
-  Serial.println(cfg.holdOn);
+  Serial.print(cfg.holdOn);
+  Serial.print(F(" flip="));
+  Serial.println(flipMask);
 }
 
 // ============================================================================
@@ -650,10 +690,10 @@ void jalankanMecanum(int16_t vx, int16_t vy, int16_t omega) {
   }
 
   // Terapkan ke motor masing-masing
-  setMotor(PIN_FL_PWM, PIN_FL_IN1, PIN_FL_IN2, fl, FLIP_FL);
-  setMotor(PIN_FR_PWM, PIN_FR_IN1, PIN_FR_IN2, fr, FLIP_FR);
-  setMotor(PIN_RL_PWM, PIN_RL_IN1, PIN_RL_IN2, rl, FLIP_RL);
-  setMotor(PIN_RR_PWM, PIN_RR_IN1, PIN_RR_IN2, rr, FLIP_RR);
+  setMotor(PIN_FL_PWM, PIN_FL_IN1, PIN_FL_IN2, fl, flipMask & FLIP_MASK_FL);
+  setMotor(PIN_FR_PWM, PIN_FR_IN1, PIN_FR_IN2, fr, flipMask & FLIP_MASK_FR);
+  setMotor(PIN_RL_PWM, PIN_RL_IN1, PIN_RL_IN2, rl, flipMask & FLIP_MASK_RL);
+  setMotor(PIN_RR_PWM, PIN_RR_IN1, PIN_RR_IN2, rr, flipMask & FLIP_MASK_RR);
 }
 
 // ============================================================================
@@ -785,8 +825,9 @@ bool bacaGyroRaw(int16_t &raw) {
 // ============================================================================
 // KIRIM TELEMETRI
 // ============================================================================
-// Format: "TEL:heading,vbat,rate,target,hold,turn,sign\n"
-// heading/target = derajat, rate = derajat/detik, vbat = placeholder 0.
+// Format: "TEL:heading,vbat,rate,target,hold,turn,sign,flip\n"
+// heading/target = derajat, rate = derajat/detik, vbat = placeholder 0,
+// flip = mask arah roda (web membacanya untuk menampilkan status tiap roda).
 // Dua field pertama tetap sama supaya parser lama (ground station) tidak rusak.
 void kirimTelemetri() {
   Serial.print(F("TEL:"));
@@ -800,7 +841,9 @@ void kirimTelemetri() {
   Serial.print(',');
   Serial.print(turnActive ? 1 : 0);
   Serial.print(',');
-  Serial.println(cfg.gyroSign);
+  Serial.print(cfg.gyroSign);
+  Serial.print(',');
+  Serial.println(flipMask);
 }
 
 // ============================================================================

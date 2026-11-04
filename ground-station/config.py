@@ -15,6 +15,9 @@ ROBOT_HOSTNAME = "ballcollector.local"  # Nama mDNS firmware ESP32-CAM
 STREAM_PORT = 81                    # Port MJPEG stream (:81/stream)
 CMD_PORT = 80                       # Port HTTP command (:80/cmd)
 STREAM_TIMEOUT = 5                  # Timeout koneksi stream (detik)
+STREAM_READ_TIMEOUT = 3             # Stream diam selama ini = dianggap putus (detik)
+STREAM_RECONNECT_DELAY = 1.0        # Jeda sebelum menyambung ulang stream (detik)
+FRAME_STALE_SEC = 1.5               # Frame lebih tua dari ini = kamera tidak live (detik)
 CMD_TIMEOUT = 2                     # Timeout kirim perintah (detik)
 
 # ═══════════════════════════════════════════════════════════════
@@ -138,6 +141,13 @@ SAFETY_MAX_PWM = 255
 #   aktif agar watchdog Arduino (500ms) tidak menstop motor saat tombol ditahan.
 #   HARUS < 0.5s. 0.15s memberi margin ~3x.
 MOTION_HEARTBEAT = 0.15
+
+# ═══════════════════════════════════════════════════════════════
+# Kalibrasi arah — disimpan di laptop (bukan di git) supaya bertahan restart
+# ═══════════════════════════════════════════════════════════════
+DRIVE_SETTINGS_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "drive_settings.json"
+)
 
 # ═══════════════════════════════════════════════════════════════
 # Logging — Penyimpanan CSV eksperimen

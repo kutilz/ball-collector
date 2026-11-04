@@ -88,6 +88,13 @@ const el = {
     btnServoOpen: $("btn-servo-open"), btnServoClose: $("btn-servo-close"), btnServoCollect: $("btn-servo-collect"),
     // Kalibrasi
     btnCalibReset: $("btn-calib-reset"),
+    // Video
+    videoFeed: $("video-feed"), videoStale: $("video-stale"),
+    videoStaleTitle: $("video-stale-title"), videoStaleDetail: $("video-stale-detail"),
+    // Kalibrasi arah roda
+    wheelFlipBtns: document.querySelectorAll(".wheel-flip"),
+    axisInverts: document.querySelectorAll(".axis-invert"),
+    wheelCalStatus: $("wheelcal-status"),
     // Toast
     toastContainer: $("toast-container"),
 };
@@ -146,8 +153,20 @@ document.querySelectorAll(".tab-btn").forEach(btn => {
 // ═══════════════════════════════════════════════════════════════
 // SocketIO — terima data
 // ═══════════════════════════════════════════════════════════════
-socket.on("connect", () => showToast("Terhubung ke ground station", "success"));
+// Stream <img> tidak tersambung sendiri setelah server/koneksi sempat putus.
+function reloadVideoFeed() {
+    el.videoFeed.src = "/video_feed?t=" + Date.now();
+}
+el.videoFeed.addEventListener("error", () => setTimeout(reloadVideoFeed, 1000));
+
+let socketWasDown = false;
+socket.on("connect", () => {
+    showToast("Terhubung ke ground station", "success");
+    if (socketWasDown) reloadVideoFeed();
+    socketWasDown = false;
+});
 socket.on("disconnect", () => {
+    socketWasDown = true;
     showToast("Koneksi ke server terputus!", "error");
     updateConnectionUI(false);
 });
@@ -161,6 +180,7 @@ socket.on("init_state", (data) => {
     if (data.comms) {
         applySourceState(data.comms);
         updateConnectionUI(data.comms.connected, data.comms);
+        applyDriveCal(data.comms.drive_cal, data.comms.robot_online);
     }
     if (data.calibration_spec) buildCalibration(data.calibration_spec, data.calibration || {});
     if (data.calibration) syncManualFromCalib(data.calibration);
@@ -189,6 +209,11 @@ socket.on("telemetry", (data) => {
     el.cmdVx.textContent = vx; el.cmdVy.textContent = vy; el.cmdOmega.textContent = omega;
     updateMecanum(vx, vy, omega);
 
+    // Kamera + kalibrasi arah
+    updateVideoStale(data);
+    applyDriveCal(data.drive_cal, data.robot_online);
+    updateWheelCalArrows(vx, vy, omega);
+
     // Sensor IMU + daya
     updateCompass(data.heading || 0);
     updatePower(data.vbat || 0, data.rssi || 0);
@@ -203,7 +228,11 @@ socket.on("telemetry", (data) => {
 });
 
 socket.on("connection_result", (data) => {
-    if (data.success) showToast("Sumber video aktif", "success");
+    if (data.success) {
+        // ESP32 tersambung di latar belakang; hasilnya terlihat dari video.
+        if (data.status?.source === "esp32") showToast("Menyambung ke kamera robot…", "info");
+        else showToast("Sumber video aktif", "success");
+    }
     else showToast("Gagal: " + (data.status?.last_error || "tidak diketahui"), "error");
     if (data.status) {
         applySourceState(data.status);
@@ -348,7 +377,7 @@ function sourceName(src) {
 function applySourceState(status) {
     if (status.source) {
         selectedSource = status.source;
-        document.querySelectorAll(".seg-btn").forEach(b =>
+        document.querySelectorAll(".seg-btn[data-source]").forEach(b =>
             b.classList.toggle("active", b.dataset.source === status.source));
         el.sourceLabel.textContent = status.source === "esp32" ? "ESP32-CAM"
             : status.source === "video" ? "Video" : "Webcam";
@@ -485,11 +514,16 @@ function updatePower(vbat, rssi) {
     el.rssiVal.textContent = rssi === 0 ? "-- dBm" : rssi + " dBm";
 }
 
-function updateMecanum(vx, vy, omega) {
-    // Kinematik mecanum (sama dgn firmware Arduino)
+// Kinematik mecanum (sama dgn firmware Arduino)
+function mecanumWheels(vx, vy, omega) {
     let fl = vx + vy + omega, fr = vx - vy - omega, rl = vx - vy + omega, rr = vx + vy - omega;
     const mx = Math.max(Math.abs(fl), Math.abs(fr), Math.abs(rl), Math.abs(rr), 255);
     if (mx > 255) { fl = fl * 255 / mx; fr = fr * 255 / mx; rl = rl * 255 / mx; rr = rr * 255 / mx; }
+    return { fl, fr, rl, rr };
+}
+
+function updateMecanum(vx, vy, omega) {
+    const { fl, fr, rl, rr } = mecanumWheels(vx, vy, omega);
     setWheel("wheel-fl", "wt-fl", fl);
     setWheel("wheel-fr", "wt-fr", fr);
     setWheel("wheel-rl", "wt-rl", rl);
@@ -546,6 +580,75 @@ function updateRadar(data) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// KAMERA — tanda gambar beku
+// ═══════════════════════════════════════════════════════════════
+function updateVideoStale(data) {
+    const live = data.camera_live !== false;
+    el.videoStale.classList.toggle("hidden", live);
+    if (live) return;
+    el.videoStaleTitle.textContent = data.source === "esp32"
+        ? "Kamera robot terputus, menyambung ulang…" : "Kamera tidak mengirim gambar";
+    const safety = data.auto_mode ? "Robot dihentikan sampai kamera kembali. " : "";
+    el.videoStaleDetail.textContent = safety + (data.last_error || "");
+}
+
+// ═══════════════════════════════════════════════════════════════
+// KALIBRASI ARAH RODA
+// ═══════════════════════════════════════════════════════════════
+let driveCal = {};
+
+function applyDriveCal(cal, robotOnline) {
+    if (!cal) return;
+    driveCal = cal;
+
+    el.axisInverts.forEach(input => {
+        input.checked = input.dataset.axis === "vy" ? !!cal.invert_vy : !!cal.invert_omega;
+    });
+
+    const known = robotOnline && cal.wheel_flip_supported && cal.wheel_flip !== null;
+    el.wheelFlipBtns.forEach(btn => {
+        const flipped = known && (cal.wheel_flip & +btn.dataset.mask) !== 0;
+        btn.disabled = !known;
+        btn.classList.toggle("is-flipped", flipped);
+        btn.querySelector("b").textContent = known ? (flipped ? "Dibalik" : "Normal") : "—";
+    });
+
+    let status = "";
+    if (!robotOnline) {
+        status = "Robot belum tersambung. Pilih ESP32-CAM atau nyalakan Kemudikan Robot Asli.";
+    } else if (cal.wheel_flip_supported === false) {
+        status = "Balik roda butuh firmware Arduino terbaru (upload ulang robot_controller.ino). "
+            + "Toggle di bawah tetap bisa dipakai.";
+    }
+    if (el.wheelCalStatus.textContent !== status) el.wheelCalStatus.textContent = status;
+}
+
+// Panah = arah putar yang seharusnya, sudah memperhitungkan toggle sumbu.
+function updateWheelCalArrows(vx, vy, omega) {
+    const wheels = mecanumWheels(vx, driveCal.invert_vy ? -vy : vy, driveCal.invert_omega ? -omega : omega);
+    Object.entries(wheels).forEach(([name, val]) => {
+        const g = $("wc-" + name);
+        g.classList.toggle("fwd", val > 0);
+        g.classList.toggle("rev", val < 0);
+        g.querySelector("text").textContent = val > 0 ? "▲" : val < 0 ? "▼" : "·";
+    });
+}
+
+el.wheelFlipBtns.forEach(btn => {
+    btn.addEventListener("click", () => {
+        socket.emit("set_wheel_flip", { mask: driveCal.wheel_flip ^ +btn.dataset.mask });
+        showToast("Setelah membalik roda, ulangi \"Deteksi arah putar\" di halaman /tune robot", "info");
+    });
+});
+
+el.axisInverts.forEach(input => {
+    input.addEventListener("change", () => {
+        socket.emit("set_axis_invert", { axis: input.dataset.axis, inverted: input.checked });
+        input.blur();  // Fokus di <input> membuat shortcut keyboard WASD diabaikan
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════
 // KALIBRASI — generate slider dari spec
 // ═══════════════════════════════════════════════════════════════
 function fmtCalib(key, value) {
@@ -594,11 +697,12 @@ function updateSourceGroups(src) {
     el.videoUpload.classList.toggle("hidden", src !== "video");
 }
 
-document.querySelectorAll(".seg-btn").forEach(btn => {
+// Hanya tombol sumber: tombol detektor juga .seg-btn dan tak boleh mengganti kamera.
+document.querySelectorAll(".seg-btn[data-source]").forEach(btn => {
     btn.addEventListener("click", () => {
         const src = btn.dataset.source;
         selectedSource = src;
-        document.querySelectorAll(".seg-btn").forEach(b => b.classList.toggle("active", b === btn));
+        document.querySelectorAll(".seg-btn[data-source]").forEach(b => b.classList.toggle("active", b === btn));
         updateSourceGroups(src);
         el.sourceLabel.textContent = src === "esp32" ? "ESP32-CAM" : src === "video" ? "Video" : "Webcam";
 

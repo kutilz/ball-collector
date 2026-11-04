@@ -217,6 +217,22 @@ body {
     background: #0a0a0a;
 }
 
+/* Tanda gambar beku: frame terakhir tetap terlihat, tapi jelas bukan live */
+.video-stale {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 16px;
+    text-align: center;
+    background: rgba(8, 12, 24, 0.72);
+}
+.video-stale strong { font-size: 1rem; color: var(--accent-amber); }
+.video-stale span { font-size: 0.78rem; color: var(--text-secondary); max-width: 44ch; }
+
 /* ── Control Panel (sidebar) ─────────────────────────────── */
 .control-panel {
     display: flex;
@@ -1022,6 +1038,50 @@ input[type="range"].hsv-slider::-moz-range-thumb {
     height: 46px;
     font-size: 1.2rem;
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   KALIBRASI ARAH RODA
+   ═══════════════════════════════════════════════════════════════ */
+.wheelcal {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(84px, 110px) minmax(0, 1fr);
+    gap: 8px;
+    align-items: stretch;
+    margin-bottom: 10px;
+}
+.wheelcal-col {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    gap: 8px;
+}
+.wheelcal-robot { width: 100%; align-self: center; }
+.wheelcal-front { fill: none; stroke: var(--accent-blue); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+.wheelcal-label { font-size: 9px; letter-spacing: 0.08em; text-anchor: middle; fill: var(--text-muted); }
+.wheelcal-wheel rect { fill: rgba(255,255,255,0.05); stroke: var(--border-subtle); stroke-width: 1; }
+.wheelcal-wheel text { font-size: 15px; text-anchor: middle; dominant-baseline: middle; fill: var(--text-muted); }
+.wheelcal-wheel.fwd rect { fill: rgba(0, 255, 136, 0.16); stroke: var(--accent-green); }
+.wheelcal-wheel.fwd text { fill: var(--accent-green); }
+.wheelcal-wheel.rev rect { fill: rgba(255, 68, 102, 0.16); stroke: var(--accent-coral); }
+.wheelcal-wheel.rev text { fill: var(--accent-coral); }
+
+.wheel-flip {
+    flex-direction: column;
+    gap: 2px;
+    width: 100%;
+    min-height: 52px;
+    padding: 6px;
+}
+.wheel-flip span { font-size: 0.68rem; font-weight: 500; color: var(--text-secondary); }
+.wheel-flip b { font-size: 0.8rem; font-weight: 600; }
+.wheel-flip.is-flipped { border-color: var(--accent-amber); }
+.wheel-flip.is-flipped b { color: var(--accent-amber); }
+.wheel-flip:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.wheelcal-status { font-size: 0.74rem; line-height: 1.4; color: var(--accent-amber); margin-bottom: 8px; }
+.wheelcal-status:empty { display: none; }
+.wheelcal-hint { font-size: 0.72rem; line-height: 1.45; color: var(--text-secondary); margin: 0 0 12px; }
+#card-wheel-cal .toggle-row:last-child { margin-bottom: 0; }
 
 /* ═══════════════════════════════════════════════════════════════
    KALIBRASI — slider rows generik

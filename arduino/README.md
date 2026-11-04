@@ -195,6 +195,7 @@ Servo SG90       Arduino Uno
 | Gerak | `CMD:vx,vy,omega\n` | `CMD:100,0,0\n` | vx=maju/mundur, vy=kiri/kanan, omega=putar |
 | Servo | `SERVO:sudut\n` | `SERVO:90\n` | Sudut 0-180 derajat |
 | Collect | `COLLECT\n` | `COLLECT\n` | Jalankan sekuens pengumpulan |
+| Balik roda | `FLIP:mask\n` | `FLIP:12\n` | Mask FL=1, FR=2, RL=4, RR=8; disimpan di EEPROM. Mereset arah gyro, jalankan ulang `DIRCAL` |
 
 ### Data Keluar (ke ESP32-CAM)
 | Data | Format | Contoh | Keterangan |

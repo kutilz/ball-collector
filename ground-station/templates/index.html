@@ -12,7 +12,7 @@
     <!-- Font & CSS 100% LOKAL — nol ketergantungan internet.
          Penting: saat ESP32 mode AP, laptop konek WiFi robot tanpa internet. -->
     <link rel="stylesheet" href="/static/css/fonts.css?v=4">
-    <link rel="stylesheet" href="/static/css/style.css?v=5">
+    <link rel="stylesheet" href="/static/css/style.css?v=6">
 
     <!-- Import map three.js (di-host LOKAL) untuk viewer 3D robot.
          Wajib dideklarasi sebelum module mana pun di-load. -->
@@ -72,6 +72,10 @@
         <section class="video-panel" id="video-panel">
             <div class="video-wrapper">
                 <img id="video-feed" src="/video_feed" alt="Live Feed">
+                <div class="video-stale hidden" id="video-stale" role="status">
+                    <strong id="video-stale-title">Kamera terputus</strong>
+                    <span id="video-stale-detail"></span>
+                </div>
             </div>
 
             <!-- Strip telemetri ringkas di bawah video -->
@@ -255,6 +259,57 @@
                         <div class="cmd-status" id="cmd-status">
                             <span class="cmd-status-dot"></span>
                             <span id="cmd-status-text">Siap — belum ada perintah</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Card: Kalibrasi arah roda -->
+                <div class="card" id="card-wheel-cal">
+                    <div class="card-header">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+                        <h2>Kalibrasi Arah Roda</h2>
+                    </div>
+                    <div class="card-body">
+                        <div class="wheelcal">
+                            <div class="wheelcal-col">
+                                <button class="btn wheel-flip" data-mask="1"><span>Depan Kiri</span><b>—</b></button>
+                                <button class="btn wheel-flip" data-mask="4"><span>Belakang Kiri</span><b>—</b></button>
+                            </div>
+                            <svg class="wheelcal-robot" viewBox="0 0 120 150" role="img" aria-label="Robot dilihat dari atas, dengan arah putar yang diharapkan pada tiap roda">
+                                <rect x="32" y="20" width="56" height="110" rx="8" class="chassis"/>
+                                <polyline points="50,48 60,36 70,48" class="wheelcal-front"/>
+                                <text x="60" y="62" class="wheelcal-label">DEPAN</text>
+                                <g class="wheelcal-wheel" id="wc-fl"><rect x="8" y="24" width="20" height="40" rx="5"/><text x="18" y="49">·</text></g>
+                                <g class="wheelcal-wheel" id="wc-fr"><rect x="92" y="24" width="20" height="40" rx="5"/><text x="102" y="49">·</text></g>
+                                <g class="wheelcal-wheel" id="wc-rl"><rect x="8" y="86" width="20" height="40" rx="5"/><text x="18" y="111">·</text></g>
+                                <g class="wheelcal-wheel" id="wc-rr"><rect x="92" y="86" width="20" height="40" rx="5"/><text x="102" y="111">·</text></g>
+                            </svg>
+                            <div class="wheelcal-col">
+                                <button class="btn wheel-flip" data-mask="2"><span>Depan Kanan</span><b>—</b></button>
+                                <button class="btn wheel-flip" data-mask="8"><span>Belakang Kanan</span><b>—</b></button>
+                            </div>
+                        </div>
+                        <div class="wheelcal-status" id="wheelcal-status"></div>
+                        <p class="wheelcal-hint">Angkat roda dari lantai, lalu tahan ▲ di atas. Panah menunjukkan arah yang seharusnya; balik roda yang berputar berlawanan.</p>
+                        <div class="toggle-row">
+                            <div class="toggle-text">
+                                <span class="toggle-title">Balik Geser Kiri/Kanan</span>
+                                <span class="toggle-sub">Kalau semua roda sudah benar, tapi ▶ malah ke kiri</span>
+                            </div>
+                            <label class="switch">
+                                <input type="checkbox" class="axis-invert" data-axis="vy">
+                                <span class="slider-toggle"></span>
+                            </label>
+                        </div>
+                        <div class="toggle-row">
+                            <div class="toggle-text">
+                                <span class="toggle-title">Balik Putar Kiri/Kanan</span>
+                                <span class="toggle-sub">Kalau ↻ malah berputar ke kiri. Ikut memengaruhi mode Otomatis</span>
+                            </div>
+                            <label class="switch">
+                                <input type="checkbox" class="axis-invert" data-axis="omega">
+                                <span class="slider-toggle"></span>
+                            </label>
                         </div>
                     </div>
                 </div>
@@ -586,7 +641,7 @@
 
     <!-- SocketIO (lokal — tidak bergantung CDN) + Custom JS -->
     <script src="/static/js/socket.io.min.js"></script>
-    <script src="/static/js/app.js?v=4"></script>
+    <script src="/static/js/app.js?v=5"></script>
 
     <!-- Lazy-load viewer 3D: three.js (~670KB) BARU di-download saat user
          pertama kali membuka tab Sensor. Dashboard tetap ringan utk yg tak

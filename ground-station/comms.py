@@ -23,6 +23,7 @@ lalu scan subnet /24 laptop untuk perangkat yang menjawab /tel.
 
 import collections
 import concurrent.futures
+import json
 import socket
 import threading
 import time
@@ -33,9 +34,33 @@ import config
 
 AUTO_IP = "auto"
 
+JPEG_SOI = b"\xff\xd8"
+JPEG_EOI = b"\xff\xd9"
+MAX_MJPEG_BUFFER = 2 * 1024 * 1024  # Frame QVGA cuma puluhan KB
+
 
 def _is_auto(ip):
     return not ip or ip.strip().lower() == AUTO_IP
+
+
+def _extract_jpegs(buffer):
+    """Pisahkan JPEG utuh dari buffer MJPEG. Return (daftar_jpeg, sisa_buffer).
+
+    EOI dicari SETELAH SOI: byte FF D9 nyasar sebelum frame berikutnya dibuang.
+    Kalau tidak, EOI nyasar itu terus ditemukan lebih dulu daripada SOI dan
+    stream beku selamanya walau datanya masih mengalir.
+    """
+    jpegs = []
+    while True:
+        start = buffer.find(JPEG_SOI)
+        if start == -1:
+            return jpegs, buffer[-1:]  # Byte terakhir bisa jadi FF dari SOI terpotong
+        end = buffer.find(JPEG_EOI, start + 2)
+        if end == -1:
+            rest = buffer[start:]
+            return jpegs, b"" if len(rest) > MAX_MJPEG_BUFFER else rest
+        jpegs.append(buffer[start:end + 2])
+        buffer = buffer[end + 2:]
 
 
 def _is_robot(host, timeout):
@@ -103,12 +128,22 @@ class RobotComms:
         self._webcam_index = config.WEBCAM_INDEX
         self._frame = None
         self._frame_lock = threading.Lock()
+        self._frame_time = 0.0             # Waktu frame terakhir diterima
         self._capture = None               # cv2.VideoCapture (webcam/video)
         self._open_ok = False              # hasil open kamera terakhir
         self._camera_scan = None           # hasil pindai kamera (list / None)
         self._stream_thread = None
-        self._stream_running = False
+        self._stream_stop = threading.Event()  # Sinyal berhenti thread sumber aktif
+        self._stream_is_mjpeg = False
         self._connected = False            # Sumber video aktif?
+
+        # ── Kalibrasi arah ───────────────────────────────────
+        self._invert_vy = False            # Balik sumbu geser kiri/kanan
+        self._invert_omega = False         # Balik sumbu putar
+        self._wheel_flip = None            # Mask flip roda dari Arduino (FL=1,FR=2,RL=4,RR=8)
+        self._wheel_flip_supported = None  # None = belum ada telemetri
+        self._wheel_flip_hold_until = 0.0  # Abaikan telemetri lama setelah mengirim flip
+        self._load_drive_settings()
 
         # ── Kanal command (robot asli) ───────────────────────
         self._robot_ip = config.ROBOT_IP
@@ -191,7 +226,8 @@ class RobotComms:
         if robot_ip:
             self._robot_ip = robot_ip
         if self._drive_robot and _is_auto(self._robot_ip):
-            self._resolve_auto()
+            # Pencarian makan beberapa detik; jangan memblokir tombol STOP.
+            threading.Thread(target=self._resolve_auto, daemon=True).start()
         if self._drive_robot:
             self._ensure_command_worker()
             self._start_status_poll()
@@ -233,10 +269,6 @@ class RobotComms:
         # heartbeat & STOP failsafe siap kapan pun.
         self._ensure_command_worker()
 
-        if self._source == "esp32" and _is_auto(self._esp32_ip):
-            if not self._resolve_auto():
-                return False
-
         if self._source == "esp32":
             ok = self._start_mjpeg_stream()
         elif self._source == "video":
@@ -244,77 +276,86 @@ class RobotComms:
         else:  # webcam
             ok = self._start_capture(self._webcam_index)
 
-        # Robot driving (status poll) aktif bila perlu kanal command
-        if self._command_target() is not None:
+        # Robot driving (status poll) aktif bila perlu kanal command. Sumber
+        # esp32 selalu perlu; IP 'auto' baru terisi setelah thread stream mencari.
+        if self._source == "esp32" or self._command_target() is not None:
             self._start_status_poll()
         return ok
 
     def disconnect(self):
         """Hentikan capture sumber video dan bersihkan resource."""
-        self._stream_running = False
-        if self._stream_thread and self._stream_thread.is_alive():
+        self._stream_stop.set()
+        # Kamera lokal wajib dilepas dulu sebelum dibuka lagi. Thread MJPEG tidak
+        # perlu ditunggu di sini (thread baru yang menunggunya) agar hub tak terblokir.
+        if (not self._stream_is_mjpeg and self._stream_thread
+                and self._stream_thread.is_alive()):
             self._stream_thread.join(timeout=3)
         if self._capture is not None:
             self._capture.release()
             self._capture = None
         self._connected = False
+        self._frame_time = 0.0
 
     # ─────────────────────────────────────────────────────────
     # MJPEG stream dari ESP32-CAM
     # ─────────────────────────────────────────────────────────
     def _start_mjpeg_stream(self):
-        """Mulai thread capture MJPEG stream dari ESP32-CAM."""
-        # Cek ketersediaan ESP32 dulu
-        try:
-            url = f"http://{self._esp32_ip}:{config.CMD_PORT}/"
-            resp = requests.get(url, timeout=config.STREAM_TIMEOUT)
-            if resp.status_code != 200:
-                self._last_error = f"ESP32 balas {resp.status_code}"
-                return False
-        except requests.RequestException as e:
-            self._last_error = f"ESP32 tidak tersedia: {e}"
-            return False
-
-        self._connected = True
+        """Mulai thread stream. Non-blocking: hasil koneksi tampil lewat status."""
         self._last_error = None
-        self._stream_running = True
+        self._stream_is_mjpeg = True
+        self._stream_stop = threading.Event()
         self._stream_thread = threading.Thread(
-            target=self._mjpeg_capture_loop, daemon=True
+            target=self._mjpeg_capture_loop,
+            args=(self._stream_stop, self._stream_thread),
+            daemon=True,
         )
         self._stream_thread.start()
         return True
 
-    def _mjpeg_capture_loop(self):
-        """Loop baca MJPEG stream — parse boundary JPEG secara manual."""
-        stream_url = f"http://{self._esp32_ip}:{config.STREAM_PORT}/stream"
-        try:
-            resp = requests.get(stream_url, stream=True,
-                                timeout=config.STREAM_TIMEOUT)
+    def _mjpeg_capture_loop(self, stop, prev_thread=None):
+        """Jaga stream tetap hidup: sambung ulang setiap kali putus atau macet."""
+        # Server stream ESP32 hanya melayani satu klien; tutup koneksi lama dulu.
+        if prev_thread is not None and prev_thread.is_alive():
+            prev_thread.join(timeout=config.STREAM_READ_TIMEOUT + 1)
+
+        while not stop.is_set():
+            if not _is_auto(self._esp32_ip) or self._resolve_auto():
+                try:
+                    self._read_mjpeg_stream(stop)
+                except Exception as e:  # noqa: BLE001 — thread ini tak boleh mati diam-diam
+                    self._last_error = f"Stream terputus: {e}"
+            if not stop.is_set():
+                self._connected = False
+                stop.wait(config.STREAM_RECONNECT_DELAY)
+
+    def _read_mjpeg_stream(self, stop):
+        """Baca satu koneksi MJPEG sampai putus, macet, atau diminta berhenti."""
+        url = f"http://{self._esp32_ip}:{config.STREAM_PORT}/stream"
+        timeout = (config.STREAM_TIMEOUT, config.STREAM_READ_TIMEOUT)
+        with requests.get(url, stream=True, timeout=timeout) as resp:
+            if resp.status_code != 200:
+                self._last_error = f"Stream ESP32 balas {resp.status_code}"
+                return
             buffer = b""
+            last_frame = time.time()
             for chunk in resp.iter_content(chunk_size=4096):
-                if not self._stream_running:
-                    break
-                buffer += chunk
-
-                start = buffer.find(b"\xff\xd8")
-                end = buffer.find(b"\xff\xd9")
-
-                if start != -1 and end != -1 and end > start:
-                    jpg_data = buffer[start:end + 2]
-                    buffer = buffer[end + 2:]
-
-                    frame = cv2.imdecode(
-                        np.frombuffer(jpg_data, dtype=np.uint8),
-                        cv2.IMREAD_COLOR,
-                    )
+                if stop.is_set():
+                    return
+                jpegs, buffer = _extract_jpegs(buffer + chunk)
+                # Hanya frame terbaru yang berguna; yang lain cuma menambah latensi.
+                for jpg in reversed(jpegs):
+                    frame = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8),
+                                         cv2.IMREAD_COLOR)
                     if frame is not None:
-                        with self._frame_lock:
-                            self._frame = frame
-                        self._update_fps()
-
-        except requests.RequestException as e:
-            self._last_error = f"Stream terputus: {e}"
-            self._connected = False
+                        self._store_frame(frame)
+                        self._connected = True
+                        self._last_error = None
+                        last_frame = time.time()
+                        break
+                if time.time() - last_frame > config.STREAM_READ_TIMEOUT:
+                    self._last_error = "Data stream masuk tapi tidak ada gambar valid"
+                    return
+            self._last_error = "Stream ditutup oleh robot"
 
     # ─────────────────────────────────────────────────────────
     # Capture webcam / file video (cv2.VideoCapture)
@@ -385,18 +426,21 @@ class RobotComms:
         (error -1072873821). Maka open dilakukan di thread capture. _start_capture
         menunggu hasil open singkat (bounded) agar bisa lapor sukses/gagal ke UI.
         """
-        self._stream_running = True
+        self._stream_is_mjpeg = False
+        self._stream_stop = threading.Event()
         self._open_ok = False
         open_event = threading.Event()
         self._stream_thread = threading.Thread(
-            target=self._capture_loop, args=(target, open_event), daemon=True
+            target=self._capture_loop,
+            args=(target, self._stream_stop, open_event),
+            daemon=True,
         )
         self._stream_thread.start()
         # Tunggu hasil open (maks ~4s) — one-time, hanya saat ganti sumber.
         open_event.wait(timeout=4.0)
         return self._open_ok
 
-    def _capture_loop(self, target, open_event=None):
+    def _capture_loop(self, target, stop, open_event=None):
         """Buka kamera (di thread INI) lalu loop baca frame."""
         cap = self._open_videocapture(target)
         if cap is None:
@@ -423,13 +467,11 @@ class RobotComms:
         frame_delay = (1.0 / fps) if (is_file and fps and fps > 1) else 0.0
 
         fail_count = 0
-        while self._stream_running:
+        while not stop.is_set():
             ret, frame = cap.read()
             if ret and frame is not None:
                 fail_count = 0
-                with self._frame_lock:
-                    self._frame = frame
-                self._update_fps()
+                self._store_frame(frame)
                 if frame_delay:
                     time.sleep(frame_delay)
             elif is_file and config.VIDEO_LOOP:
@@ -457,6 +499,66 @@ class RobotComms:
         with self._frame_lock:
             return self._frame.copy() if self._frame is not None else None
 
+    def _store_frame(self, frame):
+        with self._frame_lock:
+            self._frame = frame
+            self._frame_time = time.time()
+        self._update_fps()
+
+    def is_camera_live(self):
+        """True kalau frame terbaru masih segar (bukan gambar beku)."""
+        return time.time() - self._frame_time <= config.FRAME_STALE_SEC
+
+    # ═════════════════════════════════════════════════════════
+    # Kalibrasi arah
+    # ═════════════════════════════════════════════════════════
+    def _load_drive_settings(self):
+        try:
+            with open(config.DRIVE_SETTINGS_FILE, encoding="utf-8") as f:
+                data = json.load(f)
+            self._invert_vy = bool(data.get("invert_vy", False))
+            self._invert_omega = bool(data.get("invert_omega", False))
+        except (OSError, ValueError, AttributeError):
+            pass  # Belum pernah disimpan / file rusak: pakai default
+
+    def set_axis_invert(self, axis, inverted):
+        """Balik sumbu 'vy' atau 'omega' dan simpan. False kalau axis tak dikenal."""
+        if axis == "vy":
+            self._invert_vy = bool(inverted)
+        elif axis == "omega":
+            self._invert_omega = bool(inverted)
+        else:
+            return False
+        try:
+            with open(config.DRIVE_SETTINGS_FILE, "w", encoding="utf-8") as f:
+                json.dump({"invert_vy": self._invert_vy,
+                           "invert_omega": self._invert_omega}, f)
+        except OSError as e:
+            self._last_error = f"Gagal menyimpan kalibrasi arah: {e}"
+        return True
+
+    def send_wheel_flip(self, mask, action=None):
+        """Kirim mask flip roda ke Arduino (disimpan di EEPROM-nya). Non-blocking."""
+        if self._command_target() is None:
+            return "skipped"
+        self._ensure_command_worker()
+        with self._cmd_lock:
+            self._pending_oneshots.append((f"FLIP:{mask}", action))
+        # Telemetri berikutnya masih bisa membawa nilai lama; tahan sebentar.
+        # Kalau pengiriman gagal, nilai asli muncul lagi setelah waktu ini.
+        self._wheel_flip = mask
+        self._wheel_flip_hold_until = time.time() + 2.5
+        self._cmd_event.set()
+        return "queued"
+
+    def get_drive_calibration(self):
+        return {
+            "invert_vy": self._invert_vy,
+            "invert_omega": self._invert_omega,
+            "wheel_flip": self._wheel_flip,
+            "wheel_flip_supported": self._wheel_flip_supported,
+        }
+
     # ═════════════════════════════════════════════════════════
     # Kanal command ke ESP32 — NON-BLOCKING (worker thread asli)
     # ═════════════════════════════════════════════════════════
@@ -476,6 +578,12 @@ class RobotComms:
         return (self._clamp(int(vx), -cap, cap),
                 self._clamp(int(vy), -cap, cap),
                 self._clamp(int(omega), -cap, cap))
+
+    def _apply_axis_invert(self, vx, vy, omega):
+        """Terapkan kalibrasi sumbu ke semua perintah gerak (manual & otomatis)."""
+        return (vx,
+                -vy if self._invert_vy else vy,
+                -omega if self._invert_omega else omega)
 
     def send_command(self, vx, vy, omega, action=None):
         """Antri perintah motor (coalesced: terbaru menang). Non-blocking."""
@@ -586,7 +694,7 @@ class RobotComms:
 
             now = time.time()
             if motion is not None:
-                mv = self._clamp_motion(*motion)
+                mv = self._apply_axis_invert(*self._clamp_motion(*motion))
                 # Catat intent SEBELUM kirim: heartbeat tahu motion terkini walau
                 # HTTP ini lambat/gagal, dan akan retry motion yang sama.
                 self._last_motion = mv
@@ -635,7 +743,7 @@ class RobotComms:
             time.sleep(config.STATUS_POLL_INTERVAL)
 
     def _parse_arduino_tel(self, tel):
-        """Parse string 'TEL:heading,vbat' dari Arduino."""
+        """Parse 'TEL:heading,vbat,rate,target,hold,turn,sign[,flip]' dari Arduino."""
         if not tel or not tel.startswith("TEL:"):
             return
         try:
@@ -643,6 +751,10 @@ class RobotComms:
             self._heading = float(parts[0])
             if len(parts) > 1:
                 self._vbat = float(parts[1])
+            # Firmware lama tidak mengirim field flip.
+            self._wheel_flip_supported = len(parts) > 7
+            if len(parts) > 7 and time.time() >= self._wheel_flip_hold_until:
+                self._wheel_flip = int(parts[7]) & 0x0F
         except (ValueError, IndexError):
             pass
 
@@ -673,7 +785,9 @@ class RobotComms:
             "robot_ip": self._robot_ip,
             "drive_robot": self._drive_robot,
             "robot_online": self._robot_online,
-            "fps": self._fps,
+            "camera_live": self.is_camera_live(),
+            "drive_cal": self.get_drive_calibration(),
+            "fps": self._fps if self.is_camera_live() else 0,
             "heading": round(self._heading, 1),
             "vbat": round(self._vbat, 2),
             "rssi": self._rssi,

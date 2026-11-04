@@ -41,6 +41,9 @@ ground-station/uploads/
 # Bobot model YOLO (auto-download / hasil latih) — jangan di-commit
 *.pt
 
+# Kalibrasi arah per robot/laptop
+ground-station/drive_settings.json
+
 
 # OS generated files
 .DS_Store
@@ -56,3 +59,4 @@ Thumbs.db
 
 # Kredensial WiFi ESP32-CAM
 esp32cam/ball_cam/wifi_secrets.h
+.gstack/

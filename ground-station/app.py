@@ -284,6 +284,35 @@ def handle_set_drive(data):
     emit("drive_status", comms.get_status())
 
 
+def _refuse_direction_change():
+    """Arah roda tidak boleh diubah saat robot berjalan otomatis."""
+    if auto_mode:
+        emit("cmd_ack", {"action": "KALIBRASI ARAH", "status": "ignored",
+                         "detail": _ack_detail("ignored")})
+    return auto_mode
+
+
+@socketio.on("set_axis_invert")
+def handle_set_axis_invert(data):
+    """Balik sumbu geser/putar. Robot dihentikan dulu agar arah tak berubah saat jalan."""
+    if _refuse_direction_change():
+        return
+    comms.send_command(0, 0, 0)
+    comms.set_axis_invert(data.get("axis"), data.get("inverted"))
+
+
+@socketio.on("set_wheel_flip")
+def handle_set_wheel_flip(data):
+    """Kirim mask flip roda (FL=1, FR=2, RL=4, RR=8) ke firmware Arduino."""
+    mask = data.get("mask")
+    if _refuse_direction_change() or not isinstance(mask, int) or not 0 <= mask <= 15:
+        return
+    status = comms.send_wheel_flip(mask, action="BALIK RODA")
+    if status == "skipped":
+        emit("cmd_ack", {"action": "BALIK RODA", "status": "skipped",
+                         "detail": _ack_detail("skipped")})
+
+
 @socketio.on("update_calibration")
 def handle_update_calibration(data):
     """Perbarui satu parameter kalibrasi runtime."""
@@ -442,27 +471,34 @@ def _main_loop():
 
         # 1. Ambil frame
         frame = comms.get_frame()
+        camera_live = comms.is_camera_live()
 
-        # 2. Proses vision
-        detection = vision.process_frame(frame)
+        # 2. Proses vision. Gambar beku tidak boleh dideteksi sebagai bola.
+        detection = vision.process_frame(frame if camera_live else None)
 
-        # Simpan frame beranotasi untuk stream
-        with latest_lock:
-            latest_annotated = detection.get("frame_annotated")
+        # Simpan frame beranotasi untuk stream. Saat kamera putus, frame terakhir
+        # tetap tampil (UI memberi tanda beku), bukan layar hitam.
+        if camera_live or latest_annotated is None:
+            with latest_lock:
+                latest_annotated = detection.get("frame_annotated")
 
         # 3. Jalankan brain jika auto-mode
         cmd = {"vx": 0, "vy": 0, "omega": 0, "servo_cmd": None}
         if auto_mode and brain.is_running:
-            cmd = brain.update(detection)
+            if camera_live:
+                cmd = brain.update(detection)
 
-            # Kirim perintah motor ke robot
-            comms.send_command(cmd["vx"], cmd["vy"], cmd["omega"])
+                # Kirim perintah motor ke robot
+                comms.send_command(cmd["vx"], cmd["vy"], cmd["omega"])
 
-            # Kirim perintah servo jika ada
-            if cmd["servo_cmd"] == "OPEN":
-                comms.send_servo(config.SERVO_OPEN)
-            elif cmd["servo_cmd"] == "CLOSE":
-                comms.send_servo(config.SERVO_CLOSE)
+                # Kirim perintah servo jika ada
+                if cmd["servo_cmd"] == "OPEN":
+                    comms.send_servo(config.SERVO_OPEN)
+                elif cmd["servo_cmd"] == "CLOSE":
+                    comms.send_servo(config.SERVO_CLOSE)
+            else:
+                # FAILSAFE: robot tidak boleh jalan otomatis tanpa penglihatan.
+                comms.send_command(0, 0, 0)
 
         # 4. Log data jika recording aktif
         if logger.get_log_info()["active"]:
@@ -515,6 +551,9 @@ def _main_loop():
             "source": comms_status.get("source", "webcam"),
             "drive_robot": comms_status.get("drive_robot", False),
             "robot_online": comms_status.get("robot_online", False),
+            "camera_live": camera_live,
+            "last_error": comms_status.get("last_error"),
+            "drive_cal": comms_status.get("drive_cal"),
             "auto_mode": auto_mode,
             "logging": logger.get_log_info(),
             # Telemetri sensor (untuk visualizer)
