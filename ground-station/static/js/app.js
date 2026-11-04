@@ -56,9 +56,7 @@ const el = {
     btnManual: $("btn-manual"), btnAuto: $("btn-auto"),
     brainState: $("brain-state"), stateDuration: $("state-duration"),
     ballsCollected: $("balls-collected"),
-    // Video overlay + quickstats
-    fpsVal: $("fps-val"), stateBadge: $("state-badge"), sourceBadge: $("source-badge"),
-    detectionText: $("detection-text"), videoWrapper: document.querySelector(".video-wrapper"),
+    // Quickstats
     qsState: $("qs-state"), qsBalls: $("qs-balls"), qsHeading: $("qs-heading"),
     qsFps: $("qs-fps"), qsVbat: $("qs-vbat"),
     // Deteksi / radar
@@ -172,14 +170,12 @@ socket.on("telemetry", (data) => {
     frameW = data.frame_w || frameW;
     frameH = data.frame_h || frameH;
 
-    // Overlay + quickstats
-    el.fpsVal.textContent = data.fps || 0;
+    // Quickstats
     el.teleFps.textContent = data.fps || 0;
     el.teleStreamFps.textContent = data.stream_fps || 0;
     el.qsFps.textContent = data.fps || 0;
     el.qsBalls.textContent = data.balls_collected || 0;
 
-    updateStateBadge(data.state);
     el.brainState.textContent = data.state;
     el.qsState.textContent = data.state;
     el.stateDuration.textContent = (data.state_duration || 0).toFixed(1) + "s";
@@ -296,12 +292,6 @@ socket.on("calibration_state", (state) => {
 // ═══════════════════════════════════════════════════════════════
 // UI updates
 // ═══════════════════════════════════════════════════════════════
-function updateStateBadge(state) {
-    el.stateBadge.textContent = state;
-    el.stateBadge.className = "video-overlay state-badge state-" + state.toLowerCase();
-    el.videoWrapper.className = "video-wrapper state-" + state.toLowerCase();
-}
-
 function updateDetection(data) {
     if (data.detected) {
         el.teleDetected.textContent = "✓ Ya";
@@ -311,13 +301,11 @@ function updateDetection(data) {
         el.teleBallArea.textContent = data.ball_area;
         el.teleOffsetX.textContent = data.offset_x;
         el.teleOffsetY.textContent = data.offset_y;
-        el.detectionText.textContent = `Bola (${data.ball_x}, ${data.ball_y}) · Area ${data.ball_area}`;
     } else {
         el.teleDetected.textContent = "✗ Tidak";
         el.teleDetected.style.color = "var(--text-muted)";
         el.teleBallX.textContent = el.teleBallY.textContent = "—";
         el.teleBallArea.textContent = el.teleOffsetX.textContent = el.teleOffsetY.textContent = "—";
-        el.detectionText.textContent = "Tidak ada deteksi";
     }
     updateRadar(data);
 }
@@ -364,7 +352,6 @@ function applySourceState(status) {
             b.classList.toggle("active", b.dataset.source === status.source));
         el.sourceLabel.textContent = status.source === "esp32" ? "ESP32-CAM"
             : status.source === "video" ? "Video" : "Webcam";
-        el.sourceBadge.textContent = (status.source || "webcam").toUpperCase();
         updateSourceGroups(status.source);
     }
     if (typeof status.webcam_index === "number" && el.webcamIndex
@@ -613,7 +600,6 @@ document.querySelectorAll(".seg-btn").forEach(btn => {
         selectedSource = src;
         document.querySelectorAll(".seg-btn").forEach(b => b.classList.toggle("active", b === btn));
         updateSourceGroups(src);
-        el.sourceBadge.textContent = src.toUpperCase();
         el.sourceLabel.textContent = src === "esp32" ? "ESP32-CAM" : src === "video" ? "Video" : "Webcam";
 
         if (src === "video") {
