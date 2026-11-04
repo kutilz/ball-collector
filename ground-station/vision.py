@@ -18,7 +18,7 @@ Semua backend menghasilkan dict deteksi berformat SAMA sehingga otak robot
 
 Pipeline umum tiap frame:
   resize → (deteksi backend) → pilih objek terbesar → centroid + area →
-  overlay anotasi (bbox, crosshair, panah offset, badge mode).
+  overlay anotasi (bounding box saja).
 """
 
 import cv2
@@ -187,22 +187,15 @@ class VisionPipeline:
         cx_frame = w_frame // 2
         cy_frame = h_frame // 2
 
-        # Buat kanvas anotasi + garis tengah vertikal (referensi heading)
         annotated = resized.copy()
-        cv2.line(annotated, (cx_frame, 0), (cx_frame, h_frame),
-                 (100, 100, 100), 1, cv2.LINE_AA)
 
         # 2. Deteksi via backend aktif → (cx, cy, area, bbox) atau None.
         #    Bila backend AI tapi model tak siap, fallback otomatis ke HSV
         #    agar robot tidak buta.
         if self.backend in self.AI_BACKENDS and self._ensure_model(self.backend):
             det = self._detect_ai(self.backend, resized)
-            active = self.backend
         else:
             det = self._detect_hsv(resized)
-            active = "hsv"
-
-        self._draw_badge(annotated, active)
 
         if det is None:
             return self._empty_result(annotated)
@@ -210,8 +203,7 @@ class VisionPipeline:
         cx, cy, area, bbox = det
         offset_x = cx - cx_frame
         offset_y = cy - cy_frame
-        self._annotate(annotated, cx, cy, area, bbox,
-                       offset_x, offset_y, cx_frame, cy_frame)
+        self._annotate(annotated, bbox)
 
         return {
             "detected": True,
@@ -313,38 +305,11 @@ class VisionPipeline:
     # ═════════════════════════════════════════════════════════
     # Anotasi overlay (dipakai semua backend)
     # ═════════════════════════════════════════════════════════
-    def _annotate(self, annotated, cx, cy, area, bbox,
-                  offset_x, offset_y, cx_frame, cy_frame):
-        """Gambar bbox, crosshair, panah offset, dan teks info pada frame."""
+    def _annotate(self, annotated, bbox):
+        """Gambar bounding box bola yang terdeteksi."""
         bx, by, bw, bh = bbox
-        h_frame = annotated.shape[0]
-
-        # Bounding rect hijau
         cv2.rectangle(annotated, (bx, by), (bx + bw, by + bh),
                       (0, 255, 100), 2, cv2.LINE_AA)
-
-        # Crosshair merah di centroid
-        cross_size = 15
-        cv2.line(annotated, (cx - cross_size, cy), (cx + cross_size, cy),
-                 (0, 0, 255), 2, cv2.LINE_AA)
-        cv2.line(annotated, (cx, cy - cross_size), (cx, cy + cross_size),
-                 (0, 0, 255), 2, cv2.LINE_AA)
-
-        # Panah offset dari tengah frame ke centroid
-        cv2.arrowedLine(annotated, (cx_frame, cy_frame), (cx, cy),
-                        (0, 200, 255), 2, cv2.LINE_AA, tipLength=0.15)
-
-        # Teks info area dan offset
-        info_text = f"Area: {int(area)}  Offset: ({offset_x}, {offset_y})"
-        cv2.putText(annotated, info_text, (10, h_frame - 15),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 200), 1, cv2.LINE_AA)
-
-    def _draw_badge(self, annotated, active):
-        """Badge kecil kiri-atas menandai backend deteksi yang aktif."""
-        label = {"yolo": "AI: YOLO", "yoloworld": "AI: YOLO-World"}.get(active, "HSV")
-        color = (255, 180, 0) if active in self.AI_BACKENDS else (0, 255, 200)
-        cv2.putText(annotated, label, (10, 22),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
 
     # ═════════════════════════════════════════════════════════
     # Preview mask HSV (untuk debugging threshold)
