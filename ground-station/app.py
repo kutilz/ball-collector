@@ -12,6 +12,7 @@ import gzip
 import time
 import threading
 import cv2
+from eventlet import tpool
 from werkzeug.utils import secure_filename
 from flask import Flask, Response, render_template, request, jsonify
 from flask_socketio import SocketIO, emit
@@ -225,7 +226,18 @@ def handle_connect(auth=None):
         "auto_mode": auto_mode,
         "calibration": config.get_calibration(),
         "calibration_spec": config.CALIBRATION_SPEC,
+        "nav": _nav_state(),
     })
+
+
+def _nav_state():
+    """Pengaturan navigasi & kanal robot untuk sinkronisasi UI."""
+    return {
+        "strategy": config.NAV_STRATEGY,
+        "esp32_video_mode": comms.get_status()["esp32_video_mode"],
+        "gain_recommended": list(config.HOLD_GAIN_RECOMMENDED),
+        "speed_cmps_at_100": config.SPEED_CM_PER_S_AT_100,
+    }
 
 
 @socketio.on("disconnect")
@@ -367,6 +379,79 @@ def handle_set_world_prompt(data):
     socketio.emit("world_prompt_state", {**result, "info": vision.get_backend_info()})
 
 
+@socketio.on("set_esp32_video_mode")
+def handle_set_esp32_video_mode(data):
+    """Snapshot (perintah tetap lancar) vs stream MJPEG terus (mulus, port 80 bisa macet)."""
+    comms.set_esp32_video_mode(data.get("mode"))
+    socketio.emit("nav_state", _nav_state())
+
+
+@socketio.on("set_nav_strategy")
+def handle_set_nav_strategy(data):
+    """Strategi otomatis: 'gyro' (bidik TURN + maju lurus) atau 'continuous' (P-controller)."""
+    strategy = data.get("strategy")
+    if strategy in StateMachine.STRATEGIES:
+        config.NAV_STRATEGY = strategy
+    socketio.emit("nav_state", _nav_state())
+
+
+def _num(data, key, lo, hi):
+    """Ambil angka dari payload & cek rentang; None bila tidak valid."""
+    try:
+        v = float(data.get(key))
+    except (TypeError, ValueError):
+        return None
+    return v if lo <= v <= hi else None
+
+
+@socketio.on("robot_cmd")
+def handle_robot_cmd(data):
+    """
+    Perintah konfigurasi/uji ke Arduino lewat kanal yang sama (non-blocking):
+      gain  {kp, kd, kpturn} -> GAIN:kp,kd,kpTurn (disimpan EEPROM Arduino)
+      hold  {on}             -> HOLD:1/0
+      zero / cal / get       -> ZERO / CAL (robot harus diam) / GET (baca config)
+      turn  {deg}            -> TURN:deg (uji bidik manual; hanya mode Manual)
+    """
+    kind = data.get("cmd")
+    if auto_mode and kind in ("cal", "turn", "zero", "gain", "hold"):
+        emit("cmd_ack", {"action": str(kind).upper(), "status": "ignored",
+                         "detail": _ack_detail("ignored")})
+        return
+
+    if kind == "gain":
+        kp = _num(data, "kp", 0, 30)
+        kd = _num(data, "kd", 0, 5)
+        kpt = _num(data, "kpturn", 0, 20)
+        if None in (kp, kd, kpt):
+            emit("cmd_ack", {"action": "GAIN", "status": "error",
+                             "detail": "Gain di luar rentang (Kp 0-30, Kd 0-5, KpTurn 0-20)"})
+            return
+        label = "GAIN"
+        status = comms.send_raw(f"GAIN:{kp:g},{kd:g},{kpt:g}", action=label)
+        comms.send_raw("GET")
+    elif kind == "hold":
+        on = bool(data.get("on"))
+        label = "HEADING HOLD " + ("ON" if on else "OFF")
+        status = comms.send_raw(f"HOLD:{int(on)}", action=label)
+    elif kind in ("zero", "cal", "get"):
+        label = {"zero": "NOL-KAN HEADING", "cal": "KALIBRASI GYRO", "get": "BACA CONFIG"}[kind]
+        if kind == "cal":
+            comms.send_command(0, 0, 0)  # pastikan diam sebelum bias diukur
+        status = comms.send_raw(kind.upper(), action=label)
+    elif kind == "turn":
+        deg = _num(data, "deg", -config.TURN_MAX_DEG, config.TURN_MAX_DEG)
+        if deg is None:
+            return
+        label = f"TURN {deg:+g}°"
+        status = comms.send_turn(deg, action=label)
+    else:
+        return
+
+    if status in ("skipped", "error"):
+        emit("cmd_ack", {"action": label, "status": status, "detail": _ack_detail(status)})
+
+
 def _ack_detail(status):
     """Terjemahkan status pengiriman command ke teks feedback UI."""
     if status == "ok":
@@ -375,6 +460,8 @@ def _ack_detail(status):
         return "Tidak terkirim — robot tidak dikemudikan (aktifkan 'Kemudikan Robot Asli')"
     if status == "ignored":
         return "Diabaikan — mode Otomatis aktif"
+    if status == "stale":
+        return "Dilewati robot: sudah tersusul perintah yang lebih baru"
     return comms.get_status().get("last_error") or "Gagal kirim ke robot"
 
 
@@ -465,42 +552,68 @@ def _main_loop():
     fps_counter = 0
     fps_timer = time.time()
     current_fps = 0.0
+    last_frame_time = 0.0
+    detection = vision.process_frame(None)
+    link_was_ok = True
 
     while bg_running:
         loop_start = time.time()
 
-        # 1. Ambil frame
-        frame = comms.get_frame()
+        # 1. Ambil frame + waktu terimanya (atomik)
+        frame, frame_time = comms.get_frame_with_time()
         camera_live = comms.is_camera_live()
 
-        # 2. Proses vision. Gambar beku tidak boleh dideteksi sebagai bola.
-        detection = vision.process_frame(frame if camera_live else None)
-
-        # Simpan frame beranotasi untuk stream. Saat kamera putus, frame terakhir
-        # tetap tampil (UI memberi tanda beku), bukan layar hitam.
-        if camera_live or latest_annotated is None:
+        # 2. Vision HANYA untuk frame baru (mode snapshot +-3 fps tak perlu
+        #    dideteksi ulang 33x/s). Inferensi jalan di thread asli (tpool) agar
+        #    hub eventlet tetap melayani tombol STOP: YOLO-World di CPU laptop
+        #    butuh +-3 s/frame, YOLOv8n +-0,4 s (uji 2026-11-17).
+        if camera_live and frame is not None and frame_time != last_frame_time:
+            detection = tpool.execute(vision.process_frame, frame)
+            last_frame_time = frame_time
+            fps_counter += 1
             with latest_lock:
                 latest_annotated = detection.get("frame_annotated")
+        elif not camera_live:
+            # Gambar beku tidak boleh dideteksi sebagai bola. Frame terakhir
+            # tetap tampil (UI memberi tanda beku), bukan layar hitam.
+            detection = vision.process_frame(None)
+            if latest_annotated is None:
+                with latest_lock:
+                    latest_annotated = detection.get("frame_annotated")
+
+        # Kanal perintah macet (port 80 ESP32 tidak membalas)?
+        link_bad = comms.is_commanding() and not comms.link_ok()
+        if link_bad and link_was_ok:
+            socketio.emit("cmd_ack", {"action": "KANAL ROBOT", "status": "error",
+                                      "detail": "Robot tidak membalas > "
+                                                f"{config.LINK_STALL_SEC:g} s, otomatis dijeda"})
+        link_was_ok = not link_bad
 
         # 3. Jalankan brain jika auto-mode
-        cmd = {"vx": 0, "vy": 0, "omega": 0, "servo_cmd": None}
+        cmd = {"vx": 0, "vy": 0, "omega": 0, "servo_cmd": None, "turn": None}
         if auto_mode and brain.is_running:
-            if camera_live:
-                cmd = brain.update(detection)
+            if camera_live and not link_bad:
+                ctx = {"now": time.time(), "frame_time": last_frame_time,
+                       "turning": comms.is_turning(), "gyro_ready": comms.gyro_ready()}
+                cmd = brain.update(detection, ctx)
 
-                # Kirim perintah motor ke robot
-                comms.send_command(cmd["vx"], cmd["vy"], cmd["omega"])
+                if cmd.get("turn") is not None:
+                    comms.send_turn(cmd["turn"])
+                elif (cmd["vx"], cmd["vy"], cmd["omega"]) != comms.motion_intent():
+                    # Kirim hanya saat berubah; gerak non-nol dijaga heartbeat
+                    # comms. Tidak mengirim apa-apa = TURN yang berjalan aman.
+                    comms.send_command(cmd["vx"], cmd["vy"], cmd["omega"])
 
-                # Kirim perintah servo jika ada
                 if cmd["servo_cmd"] == "OPEN":
                     comms.send_servo(config.SERVO_OPEN)
                 elif cmd["servo_cmd"] == "CLOSE":
                     comms.send_servo(config.SERVO_CLOSE)
-            else:
-                # FAILSAFE: robot tidak boleh jalan otomatis tanpa penglihatan.
+            elif comms.motion_intent() != (0, 0, 0) or comms.is_turning():
+                # FAILSAFE: tanpa penglihatan / kanal macet -> berhenti (sekali).
                 comms.send_command(0, 0, 0)
 
         # 4. Log data jika recording aktif
+        comms_status = comms.get_status()
         if logger.get_log_info()["active"]:
             collect_result = ""
             if cmd.get("servo_cmd") == "CLOSE":
@@ -514,10 +627,15 @@ def _main_loop():
                 cmd_vy=cmd.get("vy", 0),
                 cmd_omega=cmd.get("omega", 0),
                 collect_result=collect_result,
+                heading=comms_status.get("heading", ""),
+                turn_cmd="" if cmd.get("turn") is None else cmd["turn"],
+                turning=int(comms_status["turn"]["active"]),
+                aim_deg="" if cmd.get("aim_deg") is None else cmd["aim_deg"],
+                link_ok=int(not link_bad),
+                note=cmd.get("note", ""),
             )
 
-        # 5. Hitung FPS loop
-        fps_counter += 1
+        # 5. Hitung FPS vision (frame yang benar-benar diproses)
         if time.time() - fps_timer >= 1.0:
             current_fps = fps_counter
             fps_counter = 0
@@ -528,7 +646,6 @@ def _main_loop():
         # operator (supaya visualizer roda/command tidak selalu nol di manual).
         disp_cmd = cmd if auto_mode else last_manual_cmd
         brain_status = brain.get_status()
-        comms_status = comms.get_status()
         telemetry = {
             "fps": current_fps,
             "stream_fps": comms_status.get("fps", 0),
@@ -562,6 +679,19 @@ def _main_loop():
             "rssi": comms_status.get("rssi", 0),
             "frame_w": config.FRAME_WIDTH,
             "frame_h": config.FRAME_HEIGHT,
+            # Navigasi gyro & kanal (akal-akalan firmware lama)
+            "nav_strategy": brain_status["strategy"],
+            "nav_note": brain_status["note"],
+            "aim_deg": brain_status["aim_deg"],
+            "esp32_video_mode": comms_status.get("esp32_video_mode"),
+            "fw_version": comms_status.get("fw_version"),
+            "link_ok": not link_bad,
+            "link_age": comms_status.get("link_age"),
+            "tel": comms_status.get("tel"),
+            "turn": comms_status.get("turn"),
+            "gyro_ready": comms_status.get("gyro_ready"),
+            "robot_cfg": comms_status.get("robot_cfg"),
+            "msg_log": comms_status.get("msg_log"),
         }
         socketio.emit("telemetry", telemetry)
 

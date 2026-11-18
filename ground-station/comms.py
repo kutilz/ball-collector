@@ -19,11 +19,23 @@ robot fisik tetap bergerak via ESP32.
 
 IP "auto" (atau kosong) = cari robot otomatis: mDNS ballcollector.local dulu,
 lalu scan subnet /24 laptop untuk perangkat yang menjawab /tel.
+
+Akal-akalan firmware lama (temuan uji 2026-11-17, tanpa upload ulang):
+  • Video ESP32 mode "snapshot": stream dibuka-ambil-tutup, karena MJPEG yang
+    terbuka terus membuat port 80 (perintah) macet 7–20 s.
+  • Telemetri dari /tel tiap 0,2 s (bukan /status tiap 1 s) supaya status
+    TURN & pesan Arduino (CFG, "TURN selesai") terbaca cepat.
+  • Deteksi kanal macet (LINK_STALL_SEC) untuk failsafe di loop utama.
+  • TURN:deg dikirim dengan aman: heartbeat CMD dimatikan dulu, karena CMD apa
+    pun membatalkan TURN di firmware.
 """
 
 import collections
 import concurrent.futures
+import itertools
 import json
+import random
+import re
 import socket
 import threading
 import time
@@ -136,6 +148,7 @@ class RobotComms:
         self._stream_stop = threading.Event()  # Sinyal berhenti thread sumber aktif
         self._stream_is_mjpeg = False
         self._connected = False            # Sumber video aktif?
+        self._esp32_video_mode = config.ESP32_VIDEO_MODE  # "snapshot" / "stream"
 
         # ── Kalibrasi arah ───────────────────────────────────
         self._invert_vy = False            # Balik sumbu geser kiri/kanan
@@ -156,6 +169,12 @@ class RobotComms:
         # & loop utama (green-thread eventlet) tidak pernah ter-block oleh
         # requests yang lambat/timeout. Operator selalu bisa pencet STOP.
         self._session = requests.Session()         # keep-alive ke ESP32
+        # Urutan perintah: firmware ESP32 (rev 2026-11-17) membuang perintah yang
+        # datang terlambat (seq <= seq terakhir dari sid yang sama).
+        self._cmd_sid = random.randint(1, 2**31 - 1)
+        self._cmd_seq = itertools.count(1)
+        self._capture_supported = None             # /capture ada? (None = belum dicek)
+        self._fw_version = None
         self._cmd_lock = threading.Lock()
         self._pending_motion = None                # (vx,vy,omega) terbaru / None
         self._pending_motion_action = None         # label aksi utk ack / None
@@ -173,6 +192,25 @@ class RobotComms:
         self._heading = 0.0                # ° dari MPU6050
         self._vbat = 0.0                   # Tegangan baterai (placeholder)
         self._rssi = 0                     # Kekuatan sinyal WiFi ESP32
+        self._tel = {}                     # rate, target, hold, turn, sign terbaru
+        self._tel_time = 0.0
+        self._last_link_ok = 0.0           # HTTP sukses terakhir (cmd ATAU tel)
+        self._msg_id = None                # msgId terakhir dari /tel
+        self._msg_log = collections.deque(maxlen=8)  # pesan Arduino terbaru
+        self._robot_cfg = {}               # Hasil parse "MSG:CFG ..." (gain, hold, bias)
+        self._cfg_requested = False        # GET sudah dikirim sejak online?
+        self._msg_lock = threading.Lock()  # pesan bisa datang dari /tel & balasan /cmd
+
+        # ── TURN (putar relatif berbasis gyro di firmware) ───
+        self._motion_intent = (0, 0, 0)    # Gerak yang diminta (sebelum clamp/invert)
+        self._turn_inflight = False
+        self._turn_deg = 0.0
+        self._turn_sent_time = 0.0
+        self._turn_deadline = 0.0
+        self._turn_seen_active = False     # Telemetri sempat melaporkan turn=1
+        self._turn_msg_id = None           # msgId saat TURN dikirim
+        self._turn_end_time = 0.0
+        self._turn_result = None           # "selesai" / "timeout" / "gagal" / "guard" / "batal"
 
         # ── FPS & error ──────────────────────────────────────
         self._last_error = None
@@ -321,16 +359,85 @@ class RobotComms:
         while not stop.is_set():
             if not _is_auto(self._esp32_ip) or self._resolve_auto():
                 try:
-                    self._read_mjpeg_stream(stop)
+                    if self._esp32_video_mode == "snapshot":
+                        self._snapshot_loop(stop)
+                    else:
+                        self._read_mjpeg_stream(stop)
                 except Exception as e:  # noqa: BLE001 — thread ini tak boleh mati diam-diam
                     self._last_error = f"Stream terputus: {e}"
+                # Ganti mode = keluar dari loop baca, langsung masuk mode baru.
+                if self._last_error is None and not stop.is_set():
+                    continue
             if not stop.is_set():
                 self._connected = False
                 stop.wait(config.STREAM_RECONNECT_DELAY)
 
+    def set_esp32_video_mode(self, mode):
+        """Pilih 'snapshot' (aman untuk perintah) atau 'stream' (mulus). Live."""
+        if mode not in ("snapshot", "stream"):
+            return False
+        self._esp32_video_mode = mode
+        return True
+
+    def _grab_snapshot(self, stop):
+        """Satu JPEG segar: /capture (firmware baru) atau potong dari stream (lama)."""
+        if self._capture_supported is not False:
+            url = f"http://{self._esp32_ip}:{config.STREAM_PORT}/capture"
+            resp = requests.get(url, timeout=(config.STREAM_TIMEOUT, config.STREAM_READ_TIMEOUT))
+            if resp.status_code == 200 and resp.content[:2] == JPEG_SOI:
+                self._capture_supported = True
+                return resp.content
+            if resp.status_code == 404:
+                self._capture_supported = False  # Firmware lama: pakai stream
+            else:
+                self._last_error = f"Capture ESP32 balas {resp.status_code}"
+                return None
+        return self._grab_snapshot_stream(stop)
+
+    def _grab_snapshot_stream(self, stop):
+        """Buka stream, ambil frame ke-(SNAPSHOT_SKIP+1), lalu TUTUP koneksinya.
+
+        Frame awal dibuang karena masih sisa buffer kamera (basi). Koneksi yang
+        langsung ditutup membuat server stream ESP32 tidak terus menyedot CPU &
+        WiFi, sehingga port 80 (perintah) tetap responsif.
+        """
+        url = f"http://{self._esp32_ip}:{config.STREAM_PORT}/stream"
+        timeout = (config.STREAM_TIMEOUT, config.STREAM_READ_TIMEOUT)
+        with requests.get(url, stream=True, timeout=timeout) as resp:
+            if resp.status_code != 200:
+                self._last_error = f"Stream ESP32 balas {resp.status_code}"
+                return None
+            buffer, count = b"", 0
+            t0 = time.time()
+            for chunk in resp.iter_content(chunk_size=4096):
+                if stop.is_set():
+                    return None
+                jpegs, buffer = _extract_jpegs(buffer + chunk)
+                count += len(jpegs)
+                if count > config.SNAPSHOT_SKIP:
+                    return jpegs[-1]
+                if time.time() - t0 > config.STREAM_READ_TIMEOUT:
+                    break
+        self._last_error = "Snapshot: tidak ada gambar valid"
+        return None
+
+    def _snapshot_loop(self, stop):
+        """Ambil snapshot berkala sampai gagal, diminta berhenti, atau mode diganti."""
+        while not stop.is_set() and self._esp32_video_mode == "snapshot":
+            jpg = self._grab_snapshot(stop)
+            if jpg is None:
+                return
+            frame = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
+            if frame is not None:
+                self._store_frame(frame)
+                self._connected = True
+                self._last_error = None
+            stop.wait(max(0.0, float(config.SNAPSHOT_INTERVAL)))
+
     def _read_mjpeg_stream(self, stop):
         """Baca satu koneksi MJPEG sampai putus, macet, atau diminta berhenti."""
-        url = f"http://{self._esp32_ip}:{config.STREAM_PORT}/stream"
+        # ?fps= dipakai firmware baru (batas FPS agar WiFi tak jenuh); lama mengabaikan.
+        url = f"http://{self._esp32_ip}:{config.STREAM_PORT}/stream?fps={int(config.STREAM_FPS)}"
         timeout = (config.STREAM_TIMEOUT, config.STREAM_READ_TIMEOUT)
         with requests.get(url, stream=True, timeout=timeout) as resp:
             if resp.status_code != 200:
@@ -339,7 +446,7 @@ class RobotComms:
             buffer = b""
             last_frame = time.time()
             for chunk in resp.iter_content(chunk_size=4096):
-                if stop.is_set():
+                if stop.is_set() or self._esp32_video_mode != "stream":
                     return
                 jpegs, buffer = _extract_jpegs(buffer + chunk)
                 # Hanya frame terbaru yang berguna; yang lain cuma menambah latensi.
@@ -505,6 +612,17 @@ class RobotComms:
             self._frame_time = time.time()
         self._update_fps()
 
+    def get_frame_with_time(self):
+        """(frame BGR, waktu diterima) secara atomik; (None, 0) bila belum ada."""
+        with self._frame_lock:
+            if self._frame is None:
+                return None, 0.0
+            return self._frame.copy(), self._frame_time
+
+    def is_commanding(self):
+        """True bila ada robot tujuan perintah (ESP32 atau drive aktif)."""
+        return self._command_target() is not None
+
     def is_camera_live(self):
         """True kalau frame terbaru masih segar (bukan gambar beku)."""
         return time.time() - self._frame_time <= config.FRAME_STALE_SEC
@@ -586,16 +704,115 @@ class RobotComms:
                 -omega if self._invert_omega else omega)
 
     def send_command(self, vx, vy, omega, action=None):
-        """Antri perintah motor (coalesced: terbaru menang). Non-blocking."""
+        """Antri perintah motor (coalesced: terbaru menang). Non-blocking.
+
+        CMD apa pun membatalkan TURN yang sedang berjalan di firmware, jadi
+        status TURN di sini ikut ditutup.
+        """
         if self._command_target() is None:
             return "skipped"
         self._ensure_command_worker()
         with self._cmd_lock:
             self._pending_motion = (int(vx), int(vy), int(omega))
+            self._motion_intent = self._pending_motion
             if action:
                 self._pending_motion_action = action
+            if self._turn_inflight:
+                self._finish_turn("batal")
         self._cmd_event.set()
         return "queued"
+
+    def motion_intent(self):
+        """Gerak terakhir yang diminta (vx, vy, omega); (0,0,0) setelah TURN."""
+        return self._motion_intent
+
+    # ── TURN relatif (gyro, dijalankan firmware) ─────────────
+    def send_turn(self, deg, action=None):
+        """Antri TURN:deg (positif = searah jarum jam / kanan). Non-blocking.
+
+        Guardrail:
+          • |deg| dibatasi TURN_MAX_DEG (TURN:±180 ambigu di wrap180 firmware).
+          • Motion tertunda & heartbeat dimatikan: CMD berikutnya akan
+            membatalkan TURN di Arduino.
+          • Arah TURN mengikuti tanda gyro (DIRCAL), bukan toggle invert_omega.
+        """
+        if self._command_target() is None:
+            return "skipped"
+        lim = float(config.TURN_MAX_DEG)
+        deg = round(self._clamp(float(deg), -lim, lim), 1)
+        if abs(deg) < 0.1:
+            return "noop"
+        self._ensure_command_worker()
+        now = time.time()
+        with self._cmd_lock:
+            self._pending_motion = None
+            self._pending_motion_action = None
+            self._last_motion = (0, 0, 0)
+            self._motion_intent = (0, 0, 0)
+            self._pending_oneshots.append((f"TURN:{deg}", action))
+            self._turn_inflight = True
+            self._turn_deg = deg
+            self._turn_sent_time = now
+            self._turn_deadline = now + self._turn_guard_sec(deg)
+            self._turn_seen_active = False
+            self._turn_msg_id = self._msg_id
+            self._turn_result = None
+        self._cmd_event.set()
+        return "queued"
+
+    @staticmethod
+    def _turn_guard_sec(deg):
+        """Batas tunggu 'TURN selesai' untuk sudut ini (lihat config.TURN_GUARD_*)."""
+        rate = max(1.0, float(config.TURN_GUARD_DEG_PER_SEC))
+        return min(float(config.TURN_GUARD_SEC),
+                   float(config.TURN_GUARD_BASE_SEC) + abs(deg) / rate)
+
+    def _finish_turn(self, result):
+        """Tutup status TURN (dipanggil dengan/atau tanpa _cmd_lock; idempotent)."""
+        if self._turn_inflight:
+            self._turn_inflight = False
+            self._turn_result = result
+            self._turn_end_time = time.time()
+
+    def is_turning(self):
+        """True selama TURN terakhir belum dilaporkan selesai (dengan batas waktu)."""
+        if not self._turn_inflight:
+            return False
+        if time.time() >= self._turn_deadline:
+            self._finish_turn("guard")
+            self._last_error = "TURN tanpa kabar selesai — dianggap selesai (cek telemetri)"
+            return False
+        return True
+
+    def get_turn_info(self):
+        return {"active": self._turn_inflight, "deg": self._turn_deg,
+                "end_time": self._turn_end_time, "result": self._turn_result}
+
+    # ── Perintah konfigurasi Arduino (one-shot) ──────────────
+    RAW_ALLOWED = re.compile(r"^(GAIN:[0-9.]+,[0-9.]+,[0-9.]+|HOLD:[01]|ZERO|CAL|GET)$")
+
+    def send_raw(self, q, action=None):
+        """Antri perintah konfigurasi yang di-whitelist (GAIN/HOLD/ZERO/CAL/GET)."""
+        if self._command_target() is None:
+            return "skipped"
+        if not self.RAW_ALLOWED.match(q):
+            return "error"
+        self._ensure_command_worker()
+        with self._cmd_lock:
+            self._pending_oneshots.append((q, action))
+        self._cmd_event.set()
+        return "queued"
+
+    def link_ok(self):
+        """True bila ada balasan HTTP dari robot dalam LINK_STALL_SEC terakhir."""
+        return time.time() - self._last_link_ok <= config.LINK_STALL_SEC
+
+    def link_age(self):
+        return round(time.time() - self._last_link_ok, 1) if self._last_link_ok else None
+
+    def gyro_ready(self):
+        """TURN & heading hold butuh tanda gyro (DIRCAL) yang sudah terdeteksi."""
+        return bool(self._tel) and self._tel.get("sign", 0) != 0
 
     def send_servo(self, angle, action=None):
         """Antri perintah servo (one-shot FIFO). Non-blocking."""
@@ -636,12 +853,23 @@ class RobotComms:
             return "skipped"
         try:
             url = f"http://{target}:{config.CMD_PORT}/cmd"
-            resp = self._session.get(url, params={"q": q},
-                                     timeout=config.CMD_TIMEOUT)
+            params = {"q": q, "seq": next(self._cmd_seq), "sid": self._cmd_sid}
+            resp = self._session.get(url, params=params, timeout=config.CMD_TIMEOUT)
             self._robot_online = resp.status_code == 200
             if not self._robot_online:
                 self._last_error = f"Robot balas {resp.status_code}"
                 return "error"
+            self._last_link_ok = time.time()
+            try:
+                data = resp.json()
+            except ValueError:
+                data = {}
+            if data.get("stale"):
+                return "stale"  # Sudah tersusul perintah yang lebih baru
+            # Firmware baru menyertakan telemetri di balasan /cmd.
+            if "tel" in data:
+                self._parse_arduino_tel(data.get("tel", ""))
+                self._parse_arduino_msg(data.get("msgId"), data.get("msg", ""))
             return "ok"
         except requests.RequestException as e:
             self._robot_online = False
@@ -683,7 +911,12 @@ class RobotComms:
                 if item is None:
                     break
                 q, action = item
-                self._push_ack(action, self._http_send(q))
+                status = self._http_send(q)
+                self._push_ack(action, status)
+                if q.startswith("TURN:") and status != "ok" and not self._turn_seen_active:
+                    # Bisa jadi tidak sampai, bisa juga sampai tapi balasannya
+                    # hilang. Beri 2 s untuk telemetri membuktikan robot berputar.
+                    self._turn_deadline = min(self._turn_deadline, time.time() + 2.0)
 
             # 2. Motion — kirim yang terbaru (coalesced) atau heartbeat.
             with self._cmd_lock:
@@ -713,10 +946,10 @@ class RobotComms:
         self._http_send("CMD:0,0,0")
 
     # ═════════════════════════════════════════════════════════
-    # Polling /status ESP32 → telemetri Arduino (heading, vbat, rssi)
+    # Polling /tel ESP32 → telemetri Arduino + pesan MSG terakhir
     # ═════════════════════════════════════════════════════════
     def _start_status_poll(self):
-        """Mulai thread polling /status (idempotent)."""
+        """Mulai thread polling /tel (idempotent)."""
         if self._status_running:
             return
         self._status_running = True
@@ -726,21 +959,30 @@ class RobotComms:
         self._status_thread.start()
 
     def _status_poll_loop(self):
-        """Ambil /status ESP32 secara berkala, parse telemetri Arduino."""
+        """Ambil /tel berkala (ringan, ±50 ms): heading, status TURN, pesan Arduino."""
+        session = requests.Session()
         while self._status_running:
             target = self._command_target()
             if target is not None:
                 try:
-                    url = f"http://{target}:{config.CMD_PORT}/status"
-                    resp = requests.get(url, timeout=config.CMD_TIMEOUT)
+                    url = f"http://{target}:{config.CMD_PORT}/tel"
+                    resp = session.get(url, timeout=config.CMD_TIMEOUT)
                     if resp.status_code == 200:
                         data = resp.json()
                         self._rssi = int(data.get("rssi", 0))
+                        self._fw_version = data.get("fw")  # None = firmware lama
                         self._robot_online = True
-                        self._parse_arduino_tel(data.get("arduino_telemetry", ""))
+                        self._last_link_ok = time.time()
+                        self._parse_arduino_tel(data.get("tel", ""))
+                        self._parse_arduino_msg(data.get("msgId"), data.get("msg", ""))
+                        if not self._cfg_requested:
+                            # Baca gain/hold yang tersimpan di EEPROM sekali per sesi online.
+                            self._cfg_requested = True
+                            self.send_raw("GET")
                 except (requests.RequestException, ValueError):
                     self._robot_online = False
-            time.sleep(config.STATUS_POLL_INTERVAL)
+                    self._cfg_requested = False
+            time.sleep(config.TEL_POLL_INTERVAL)
 
     def _parse_arduino_tel(self, tel):
         """Parse 'TEL:heading,vbat,rate,target,hold,turn,sign[,flip]' dari Arduino."""
@@ -751,12 +993,50 @@ class RobotComms:
             self._heading = float(parts[0])
             if len(parts) > 1:
                 self._vbat = float(parts[1])
+            if len(parts) >= 7:
+                self._tel = {"rate": float(parts[2]), "target": float(parts[3]),
+                             "hold": int(float(parts[4])), "turn": int(float(parts[5])),
+                             "sign": int(float(parts[6]))}
+                self._tel_time = time.time()
+                # Status TURN dari bendera telemetri (cadangan kalau pesan terlewat).
+                if self._turn_inflight:
+                    if self._tel["turn"] == 1:
+                        self._turn_seen_active = True
+                        self._turn_deadline = max(self._turn_deadline,
+                                                  time.time() + 2.0)
+                    elif self._turn_seen_active:
+                        self._finish_turn("selesai")
             # Firmware lama tidak mengirim field flip.
             self._wheel_flip_supported = len(parts) > 7
             if len(parts) > 7 and time.time() >= self._wheel_flip_hold_until:
                 self._wheel_flip = int(parts[7]) & 0x0F
         except (ValueError, IndexError):
             pass
+
+    _CFG_RE = re.compile(r"(\w+)=(-?[0-9.]+)")
+
+    def _parse_arduino_msg(self, msg_id, msg):
+        """Catat pesan 'MSG:' baru: hasil TURN, konfigurasi (CFG), kalibrasi."""
+        with self._msg_lock:
+            if msg_id is None or msg_id == self._msg_id:
+                return
+            first = self._msg_id is None
+            self._msg_id = msg_id
+        if not msg:
+            return
+        if msg.startswith("CFG"):
+            cfg = {k: float(v) for k, v in self._CFG_RE.findall(msg)}
+            if cfg:
+                self._robot_cfg = cfg
+        if first:
+            return  # Pesan lama dari sebelum ground station tersambung
+        self._msg_log.appendleft({"t": time.strftime("%H:%M:%S"), "msg": msg})
+        if self._turn_inflight and self._turn_msg_id != msg_id:
+            if msg.startswith("TURN selesai") or msg.startswith("TURN timeout"):
+                self._finish_turn(msg.split()[1].strip(",."))
+            elif msg.startswith("GAGAL TURN"):
+                self._finish_turn("gagal")
+                self._last_error = msg
 
     # ─────────────────────────────────────────────────────────
     # FPS
@@ -792,4 +1072,14 @@ class RobotComms:
             "vbat": round(self._vbat, 2),
             "rssi": self._rssi,
             "last_error": self._last_error,
+            "esp32_video_mode": self._esp32_video_mode,
+            "fw_version": self._fw_version,
+            "capture_supported": self._capture_supported,
+            "link_ok": self.link_ok(),
+            "link_age": self.link_age(),
+            "tel": self._tel,
+            "turn": self.get_turn_info(),
+            "gyro_ready": self.gyro_ready(),
+            "robot_cfg": self._robot_cfg,
+            "msg_log": list(self._msg_log),
         }

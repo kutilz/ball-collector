@@ -57,6 +57,13 @@ class DataLogger:
                 "cmd_vy",
                 "cmd_omega",
                 "collect_result",
+                # Kolom tambahan (navigasi gyro & kanal) — di akhir agar skrip lama tetap jalan
+                "heading",
+                "turn_cmd",
+                "turning",
+                "aim_deg",
+                "link_ok",
+                "note",
             ])
 
             self._entry_count = 0
@@ -88,7 +95,8 @@ class DataLogger:
     # Tulis satu baris data
     # ─────────────────────────────────────────────────────────
     def log_entry(self, state, ball_x, ball_y, ball_area,
-                  cmd_vx, cmd_vy, cmd_omega, collect_result=""):
+                  cmd_vx, cmd_vy, cmd_omega, collect_result="",
+                  heading="", turn_cmd="", turning="", aim_deg="", link_ok="", note=""):
         """
         Catat satu entri telemetri ke CSV.
 
@@ -98,6 +106,12 @@ class DataLogger:
             ball_area      — Luas kontur bola (float)
             cmd_vx/vy/omega— Perintah motor yang dikirim
             collect_result — Hasil pengumpulan ("SUCCESS" / "" / dll.)
+            heading        — Heading gyro (°) dari telemetri Arduino
+            turn_cmd       — Sudut TURN yang dikirim di baris ini (°), kosong bila tidak ada
+            turning        — 1 bila TURN sedang berjalan
+            aim_deg        — Sudut target dari piksel, atan(offset/f) (°)
+            link_ok        — 0 bila kanal perintah sedang macet
+            note           — Keterangan langkah brain
         """
         if not self._active or self._writer is None:
             return
@@ -117,6 +131,12 @@ class DataLogger:
                 cmd_vy,
                 cmd_omega,
                 collect_result,
+                heading,
+                turn_cmd,
+                turning,
+                aim_deg,
+                link_ok,
+                note,
             ])
             self._entry_count += 1
 

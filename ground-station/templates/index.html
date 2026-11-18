@@ -218,6 +218,81 @@
                             <span class="label">Bola terkumpul:</span>
                             <span class="value mono accent-green" id="balls-collected">0</span>
                         </div>
+                        <div class="status-row">
+                            <span class="label">Langkah:</span>
+                            <span class="value mono" id="nav-note">—</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Card: Robot & Navigasi (akal-akalan firmware lama, dari uji 2026-11-17) -->
+                <div class="card" id="card-robot-nav">
+                    <div class="card-header">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><line x1="12" y1="2" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="22"/><line x1="2" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="22" y2="12"/></svg>
+                        <h2>Robot &amp; Navigasi</h2>
+                    </div>
+                    <div class="card-body">
+                        <div class="nav-label">Video ESP32</div>
+                        <div class="segmented" id="vmode-seg">
+                            <button class="seg-btn active" data-vmode="snapshot">Snapshot (aman)</button>
+                            <button class="seg-btn" data-vmode="stream">Stream (mulus)</button>
+                        </div>
+                        <p class="nav-hint">Stream terus-menerus pernah membuat perintah macet 7–20 s. Snapshot ±3 fps, perintah tetap lancar.</p>
+
+                        <div class="nav-label">Navigasi otomatis</div>
+                        <div class="segmented" id="nav-seg">
+                            <button class="seg-btn active" data-nav="gyro">Gyro: bidik → maju</button>
+                            <button class="seg-btn" data-nav="continuous">Kontinu (P-control)</button>
+                        </div>
+
+                        <div class="status-row">
+                            <span class="label">Kanal perintah:</span>
+                            <span class="value mono" id="nav-link">—</span>
+                        </div>
+                        <div class="status-row">
+                            <span class="label">Gyro / TURN:</span>
+                            <span class="value mono" id="nav-turn">—</span>
+                        </div>
+                        <div class="status-row">
+                            <span class="label">Sudut target:</span>
+                            <span class="value mono" id="nav-aim">—</span>
+                        </div>
+                        <div class="status-row">
+                            <span class="label">Pesan Arduino:</span>
+                            <span class="value mono nav-msg" id="nav-msg">—</span>
+                        </div>
+
+                        <div class="toggle-row nav-hold-row">
+                            <div class="toggle-text">
+                                <span class="toggle-title">Heading Hold</span>
+                                <span class="toggle-sub" id="nav-cfg">Gain di robot: —</span>
+                            </div>
+                            <label class="switch">
+                                <input type="checkbox" id="hold-toggle" checked>
+                                <span class="slider-toggle"></span>
+                            </label>
+                        </div>
+                        <div class="gain-grid">
+                            <label>Kp<input type="number" id="gain-kp" min="0" max="30" step="0.5" value="8"></label>
+                            <label>Kd<input type="number" id="gain-kd" min="0" max="5" step="0.05" value="0.3"></label>
+                            <label>Kp Turn<input type="number" id="gain-kpt" min="0" max="20" step="0.5" value="3"></label>
+                        </div>
+                        <div class="nav-btns">
+                            <button class="btn btn-sm btn-accent" id="btn-gain-apply">Terapkan Gain</button>
+                            <button class="btn btn-sm btn-ghost" id="btn-gain-rec" title="Hasil sweep strafe: Kp 8 → simpangan 1,4° (Kp 4 → 11,2°)">Isi hasil uji (Kp 8)</button>
+                        </div>
+                        <p class="nav-hint">Gain disimpan di EEPROM Arduino, tetap berlaku setelah robot dimatikan.</p>
+
+                        <div class="nav-btns">
+                            <button class="btn btn-sm btn-ghost" id="btn-gyro-cal" title="Ukur bias gyro. Robot harus diam di lantai.">Kalibrasi Gyro</button>
+                            <button class="btn btn-sm btn-ghost" id="btn-gyro-zero">Nol-kan Heading</button>
+                        </div>
+                        <div class="nav-btns nav-turn-btns">
+                            <button class="btn btn-sm btn-ghost" data-turn="-90">↺ 90°</button>
+                            <button class="btn btn-sm btn-ghost" data-turn="-15">↺ 15°</button>
+                            <button class="btn btn-sm btn-ghost" data-turn="15">↻ 15°</button>
+                            <button class="btn btn-sm btn-ghost" data-turn="90">↻ 90°</button>
+                        </div>
                     </div>
                 </div>
 
@@ -243,6 +318,19 @@
                             <button class="btn btn-ctrl btn-rot" id="btn-ccw" data-cmd="ccw" title="Q — Putar Kiri">↺</button>
                             <span class="rotate-label">Rotasi</span>
                             <button class="btn btn-ctrl btn-rot" id="btn-cw" data-cmd="cw" title="E — Putar Kanan">↻</button>
+                        </div>
+                        <div class="speed-ctrl">
+                            <div class="speed-row">
+                                <label for="manual-speed-slider">Kecepatan Gerak</label>
+                                <span class="speed-val"><b id="manual-speed-val">80</b> PWM<span id="manual-speed-cmps"></span></span>
+                                <input type="range" id="manual-speed-slider" min="20" max="255" step="5" value="80">
+                            </div>
+                            <div class="speed-row">
+                                <label for="manual-turn-slider">Kecepatan Putar</label>
+                                <span class="speed-val"><b id="manual-turn-val">70</b> PWM</span>
+                                <input type="range" id="manual-turn-slider" min="20" max="255" step="5" value="70">
+                            </div>
+                            <div class="speed-note" id="manual-speed-note">Berlaku pada penekanan tombol berikutnya.</div>
                         </div>
                         <div class="shortcut-hint">
                             <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> Gerak &nbsp;
@@ -448,6 +536,14 @@
                         <h2>Servo Collector</h2>
                     </div>
                     <div class="card-body calib-group" data-group="servo"></div>
+                </div>
+
+                <div class="card" id="card-calib-nav">
+                    <div class="card-header">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/></svg>
+                        <h2>Navigasi Gyro &amp; Link</h2>
+                    </div>
+                    <div class="card-body calib-group" data-group="nav"></div>
                 </div>
 
                 <button class="btn btn-ghost btn-block" id="btn-calib-reset" style="margin-top:2px;">↺ Reset Semua Kalibrasi</button>

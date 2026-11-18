@@ -1394,3 +1394,54 @@ input[type="range"].hsv-slider::-moz-range-thumb {
     text-align: right;
     letter-spacing: 0.02em;
 }
+
+
+/* ═══════════════════════════════════════════════════════════════
+   ROBOT & NAVIGASI (mode video, strategi, heading hold, TURN)
+   ═══════════════════════════════════════════════════════════════ */
+.nav-label { font-size: 0.7rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-secondary); margin-bottom: 6px; }
+.nav-hint { font-size: 0.68rem; line-height: 1.4; color: var(--text-muted); margin: -6px 0 12px; }
+.nav-msg { max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
+.nav-hold-row { margin-top: 12px; }
+.gain-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 8px; }
+.gain-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 0.68rem; color: var(--text-secondary); }
+.gain-grid input {
+    width: 100%; min-width: 0;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    padding: 6px 8px;
+    color: var(--text-primary);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.82rem;
+    outline: none;
+}
+.gain-grid input:focus { border-color: var(--accent-blue); }
+.nav-btns { display: flex; gap: 8px; margin-bottom: 8px; }
+.nav-btns .btn { flex: 1; }
+.nav-turn-btns { margin-bottom: 0; }
+.link-ok   { color: var(--accent-green); }
+.link-bad  { color: var(--accent-coral); }
+.link-warn { color: var(--accent-amber); }
+
+/* Slider kecepatan di kartu Kontrol Manual */
+.speed-ctrl { margin: 12px 0 4px; display: flex; flex-direction: column; gap: 8px; }
+.speed-row { display: grid; grid-template-columns: 1fr auto; row-gap: 4px; align-items: baseline; font-size: 12px; }
+.speed-row input[type="range"] { grid-column: 1 / -1; width: 100%; margin: 0; }
+.speed-val { font-variant-numeric: tabular-nums; color: var(--text-secondary, inherit); }
+.speed-val b { color: var(--text-primary, inherit); }
+.speed-note { font-size: 11px; opacity: .7; }
+.speed-note.warn { opacity: 1; color: var(--accent-amber); }
+.speed-row input[type="range"] {
+    -webkit-appearance: none; appearance: none;
+    height: 5px; border-radius: 3px; background: rgba(255,255,255,0.1);
+    outline: none; cursor: pointer;
+}
+.speed-row input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%;
+    background: var(--accent-blue); border: none; transition: transform .15s;
+}
+.speed-row input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.18); }
+.speed-row input[type="range"]::-moz-range-thumb {
+    width: 16px; height: 16px; border-radius: 50%; background: var(--accent-blue); border: none;
+}

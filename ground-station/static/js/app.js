@@ -22,18 +22,24 @@ let selectedSource = "webcam";
 let driveRobot = false;
 let manualSpeed = 80;   // disinkron dari kalibrasi MANUAL_SPEED
 let manualTurn = 70;    // disinkron dari kalibrasi MANUAL_TURN
+let safetyMaxPwm = 255; // disinkron dari kalibrasi SAFETY_MAX_PWM (batas di server)
+let speedCmpsAt100 = 11.3; // satu titik ukur 2026-11-18 (dari server), hanya petunjuk
 let frameW = 640, frameH = 480;
 let keysPressed = new Set();
 
 // Kelompok kalibrasi → urutan key di tiap kartu
 const CALIB_GROUPS = {
-    vision: ["MIN_CONTOUR_AREA", "ERODE_ITER", "DILATE_ITER", "YOLO_CONF"],
+    vision: ["MIN_CONTOUR_AREA", "ERODE_ITER", "DILATE_ITER", "YOLO_CONF", "WORLD_CONF"],
     fsm:    ["AREA_APPROACH", "AREA_COLLECT", "CENTER_TOLERANCE"],
     motor:  ["SEARCH_SPEED", "APPROACH_SPEED", "MANUAL_SPEED", "MANUAL_TURN", "KP_STEERING",
              "SAFETY_MAX_PWM", "MOTION_HEARTBEAT"],
     servo:  ["SERVO_OPEN", "SERVO_CLOSE", "SWEEP_DELAY"],
+    nav:    ["AIM_TOL_DEG", "TURN_COMP_DEG", "SEARCH_STEP_DEG", "SETTLE_SEC", "TURN_GUARD_SEC",
+             "TURN_GUARD_BASE_SEC", "CONFIRM_FRAMES", "LOST_FRAMES", "CAMERA_HFOV_DEG", "SNAPSHOT_INTERVAL"],
 };
-const FLOAT_KEYS = new Set(["KP_STEERING", "SWEEP_DELAY", "MOTION_HEARTBEAT", "YOLO_CONF"]);
+const FLOAT_KEYS = new Set(["KP_STEERING", "SWEEP_DELAY", "MOTION_HEARTBEAT", "YOLO_CONF", "WORLD_CONF",
+    "AIM_TOL_DEG", "TURN_COMP_DEG", "SETTLE_SEC", "CAMERA_HFOV_DEG", "SNAPSHOT_INTERVAL",
+    "TURN_GUARD_SEC", "TURN_GUARD_BASE_SEC"]);
 
 // ═══════════════════════════════════════════════════════════════
 // Referensi DOM
@@ -99,7 +105,8 @@ const el = {
     toastContainer: $("toast-container"),
 };
 
-let hsvDefaults = { h_min: 5, h_max: 25, s_min: 100, s_max: 255, v_min: 100, v_max: 255 };
+// Cadangan sebelum init_state tiba; sama dengan config.HSV_DEFAULTS (uji 2026-11-18).
+let hsvDefaults = { h_min: 0, h_max: 22, s_min: 60, s_max: 255, v_min: 130, v_max: 255 };
 
 // ═══════════════════════════════════════════════════════════════
 // Toast
@@ -184,6 +191,7 @@ socket.on("init_state", (data) => {
     }
     if (data.calibration_spec) buildCalibration(data.calibration_spec, data.calibration || {});
     if (data.calibration) syncManualFromCalib(data.calibration);
+    if (data.nav) applyNavState(data.nav);
 });
 
 socket.on("telemetry", (data) => {
@@ -225,6 +233,7 @@ socket.on("telemetry", (data) => {
     updateModeUI();
 
     if (data.logging) updateLoggingUI(data.logging);
+    updateNav(data);
 });
 
 socket.on("connection_result", (data) => {
@@ -304,6 +313,8 @@ socket.on("calibration_updated", (data) => {
     }
     if (data.key === "MANUAL_SPEED") manualSpeed = data.value;
     if (data.key === "MANUAL_TURN") manualTurn = data.value;
+    if (data.key === "SAFETY_MAX_PWM") safetyMaxPwm = data.value;
+    updateSpeedUI();
 });
 
 socket.on("calibration_state", (state) => {
@@ -685,7 +696,45 @@ function buildCalibration(spec, values) {
 function syncManualFromCalib(values) {
     if ("MANUAL_SPEED" in values) manualSpeed = values.MANUAL_SPEED;
     if ("MANUAL_TURN" in values) manualTurn = values.MANUAL_TURN;
+    if ("SAFETY_MAX_PWM" in values) safetyMaxPwm = values.SAFETY_MAX_PWM;
+    updateSpeedUI();
 }
+
+// ── Slider kecepatan di kartu Kontrol Manual ────────────────────
+// Memakai kunci kalibrasi yang sama (MANUAL_SPEED / MANUAL_TURN), jadi slider ini dan
+// slider di kartu Kalibrasi selalu sejalan. Nilai dibaca saat tombol ditekan; menggeser
+// slider saat tombol sedang ditahan baru berlaku pada penekanan berikutnya.
+function updateSpeedUI() {
+    const sp = $("manual-speed-slider"), tn = $("manual-turn-slider");
+    if (!sp || !tn) return;
+    if (document.activeElement !== sp) sp.value = manualSpeed;
+    if (document.activeElement !== tn) tn.value = manualTurn;
+    $("manual-speed-val").textContent = Math.round(manualSpeed);
+    $("manual-turn-val").textContent = Math.round(manualTurn);
+    // Hanya satu titik ukur (PWM 100 ≈ 11,3 cm/s); di PWM lain hanya perkiraan kasar.
+    $("manual-speed-cmps").textContent = ` · ≈ ${(speedCmpsAt100 * Math.min(manualSpeed, safetyMaxPwm) / 100).toFixed(1)} cm/s`;
+    const note = $("manual-speed-note");
+    const capped = Math.max(manualSpeed, manualTurn) > safetyMaxPwm;
+    note.textContent = capped
+        ? `Dibatasi guardrail server: maks ${safetyMaxPwm} PWM (kartu Kalibrasi → Keselamatan).`
+        : "Berlaku pada penekanan tombol berikutnya. cm/s hanya perkiraan (terukur di PWM 100).";
+    note.classList.toggle("warn", capped);
+}
+
+function bindSpeedSlider(id, key, setter) {
+    const input = $(id);
+    if (!input) return;
+    input.addEventListener("input", () => {
+        const v = parseFloat(input.value);
+        setter(v);
+        updateSpeedUI();
+        socket.emit("update_calibration", { key, value: v });
+    });
+    // Lepaskan fokus supaya tombol WASD/QE/Spasi tidak terhenti oleh guard INPUT.
+    input.addEventListener("change", () => input.blur());
+}
+bindSpeedSlider("manual-speed-slider", "MANUAL_SPEED", v => { manualSpeed = v; });
+bindSpeedSlider("manual-turn-slider", "MANUAL_TURN", v => { manualTurn = v; });
 
 // ═══════════════════════════════════════════════════════════════
 // SUMBER VIDEO + DRIVE
@@ -903,11 +952,19 @@ el.btnCalibReset.addEventListener("click", () => socket.emit("reset_calibration"
 const KEY_CMD = { w: "forward", s: "backward", a: "left", d: "right", q: "ccw", e: "cw" };
 const KEY_BTN = { w: "btn-fwd", s: "btn-bwd", a: "btn-left", d: "btn-right", q: "btn-ccw", e: "btn-cw" };
 
+// Kolom teks mengabaikan hotkey; slider (type=range) TIDAK, supaya tombol yang sedang ditahan
+// tetap mengirim STOP saat dilepas walau fokus ada di slider kecepatan.
+function isTypingTarget(t) {
+    if (!t) return false;
+    if (t.tagName === "TEXTAREA" || t.isContentEditable) return true;
+    return t.tagName === "INPUT" && !["range", "checkbox", "radio", "button"].includes(t.type);
+}
+
 document.addEventListener("keydown", (e) => {
     const key = e.key.toLowerCase();
     if (keysPressed.has(key)) return;
     keysPressed.add(key);
-    if (e.target.tagName === "INPUT") return;
+    if (isTypingTarget(e.target)) return;
 
     if (key in KEY_CMD) {
         const name = KEY_CMD[key];
@@ -925,7 +982,7 @@ document.addEventListener("keydown", (e) => {
 document.addEventListener("keyup", (e) => {
     const key = e.key.toLowerCase();
     keysPressed.delete(key);
-    if (e.target.tagName === "INPUT") return;
+    if (isTypingTarget(e.target)) return;
     if (key in KEY_CMD) { sendManualCmd(0, 0, 0, CMD_LABEL.stop, KEY_BTN[key]); unhighlightAllButtons(); }
     if (key === " ") unhighlightAllButtons();
 });
@@ -939,3 +996,100 @@ function unhighlightAllButtons() {
 }
 
 console.log("[Ground Station] Frontend siap — menunggu SocketIO…");
+
+
+// ═══════════════════════════════════════════════════════════════
+// ROBOT & NAVIGASI — akal-akalan firmware lama (uji 2026-11-17)
+// ═══════════════════════════════════════════════════════════════
+let gainRecommended = [16, 3, 3];   // cadangan; sama dengan config.HOLD_GAIN_RECOMMENDED (uji 2026-11-18)
+let gainFormTouched = false;   // jangan timpa input yang sedang diedit operator
+
+function applyNavState(nav) {
+    document.querySelectorAll(".seg-btn[data-vmode]").forEach(b =>
+        b.classList.toggle("active", b.dataset.vmode === nav.esp32_video_mode));
+    document.querySelectorAll(".seg-btn[data-nav]").forEach(b =>
+        b.classList.toggle("active", b.dataset.nav === nav.strategy));
+    if (nav.gain_recommended) gainRecommended = nav.gain_recommended;
+    if (nav.speed_cmps_at_100) { speedCmpsAt100 = nav.speed_cmps_at_100; updateSpeedUI(); }
+}
+socket.on("nav_state", applyNavState);
+
+function setNavText(id, text, cls) {
+    const e = $(id);
+    if (!e) return;
+    if (e.textContent !== text) e.textContent = text;
+    if (cls !== undefined) e.className = "value mono " + cls + (id === "nav-msg" ? " nav-msg" : "");
+}
+
+function fmtDeg(v) {
+    return (v > 0 ? "+" : "") + Number(v).toFixed(1) + "°";
+}
+
+function updateNav(d) {
+    // Langkah brain (strategi yang benar-benar dipakai + catatan)
+    const strat = d.nav_strategy === "gyro" ? "gyro" : "kontinu";
+    setNavText("nav-note", d.auto_mode ? `[${strat}] ${d.nav_note || "…"}` : "—");
+
+    // Kanal perintah
+    if (!d.drive_robot && d.source !== "esp32") setNavText("nav-link", "tidak dikemudikan", "");
+    else if (d.link_ok) setNavText("nav-link", d.fw_version ? `lancar · fw ${d.fw_version}` : "lancar · firmware ESP32 lama", d.fw_version ? "link-ok" : "link-warn");
+    else setNavText("nav-link", `MACET ${d.link_age ?? "?"} s`, "link-bad");
+
+    // Gyro / TURN
+    const t = d.turn || {}, tel = d.tel || {};
+    if (tel.sign === undefined) setNavText("nav-turn", "belum ada telemetri", "");
+    else if (!d.gyro_ready) setNavText("nav-turn", "arah gyro belum dikalibrasi (DIRCAL di /tune)", "link-warn");
+    else if (t.active) setNavText("nav-turn", `TURN ${fmtDeg(t.deg)} berjalan…`, "link-warn");
+    else setNavText("nav-turn", `siap${t.result ? " · terakhir: " + t.result : ""} · ${(tel.rate ?? 0).toFixed(1)}°/s`, "link-ok");
+
+    setNavText("nav-aim", d.aim_deg === null || d.aim_deg === undefined ? "—" : fmtDeg(d.aim_deg));
+
+    const msgs = d.msg_log || [];
+    setNavText("nav-msg", msgs.length ? `${msgs[0].t} ${msgs[0].msg}` : "—");
+    const msgEl = $("nav-msg");
+    if (msgEl) msgEl.title = msgs.map(m => `${m.t}  ${m.msg}`).join("\n");
+
+    // Config Arduino (dari MSG:CFG)
+    const c = d.robot_cfg || {};
+    if (c.kp !== undefined) {
+        setNavText("nav-cfg", `Gain di robot: Kp ${c.kp} · Kd ${c.kd} · KpTurn ${c.kpTurn}`);
+        const hold = $("hold-toggle");
+        if (hold && document.activeElement !== hold) hold.checked = c.hold === 1;
+        if (!gainFormTouched) {
+            $("gain-kp").value = c.kp; $("gain-kd").value = c.kd; $("gain-kpt").value = c.kpTurn;
+        }
+    }
+}
+
+document.querySelectorAll(".seg-btn[data-vmode]").forEach(btn =>
+    btn.addEventListener("click", () => socket.emit("set_esp32_video_mode", { mode: btn.dataset.vmode })));
+document.querySelectorAll(".seg-btn[data-nav]").forEach(btn =>
+    btn.addEventListener("click", () => socket.emit("set_nav_strategy", { strategy: btn.dataset.nav })));
+
+["gain-kp", "gain-kd", "gain-kpt"].forEach(id =>
+    $(id).addEventListener("input", () => { gainFormTouched = true; }));
+
+$("btn-gain-rec").addEventListener("click", () => {
+    [$("gain-kp").value, $("gain-kd").value, $("gain-kpt").value] = gainRecommended;
+    gainFormTouched = true;
+    showToast(`Terisi Kp ${gainRecommended[0]} (hasil uji). Tekan Terapkan Gain untuk mengirim.`, "info");
+});
+$("btn-gain-apply").addEventListener("click", () => {
+    socket.emit("robot_cmd", { cmd: "gain", kp: +$("gain-kp").value, kd: +$("gain-kd").value,
+                               kpturn: +$("gain-kpt").value });
+    gainFormTouched = false;
+});
+$("hold-toggle").addEventListener("change", (e) => {
+    socket.emit("robot_cmd", { cmd: "hold", on: e.target.checked });
+    e.target.blur();
+});
+$("btn-gyro-cal").addEventListener("click", () => {
+    socket.emit("robot_cmd", { cmd: "cal" });
+    showToast("Kalibrasi gyro: jangan sentuh robot ±3 detik", "info");
+});
+$("btn-gyro-zero").addEventListener("click", () => socket.emit("robot_cmd", { cmd: "zero" }));
+document.querySelectorAll("[data-turn]").forEach(btn =>
+    btn.addEventListener("click", () => {
+        if (isAutoMode) { setCmdStatus("ignored", "TURN", "Mode Otomatis aktif"); return; }
+        socket.emit("robot_cmd", { cmd: "turn", deg: +btn.dataset.turn });
+    }));
