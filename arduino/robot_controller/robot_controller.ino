@@ -14,7 +14,7 @@
 
 // === KONFIGURASI DEBUG ===
 // Set ke 0 untuk nonaktifkan pesan debug (hemat memori & bandwidth serial)
-#define DEBUG 1
+#define DEBUG 0   // Serial = UART ke ESP32; log debug membebani jalur perintah
 
 #if DEBUG
   #define DBG_PRINT(x)   Serial.print(x)
@@ -82,6 +82,11 @@
 #define FLIP_RR true
 
 // Bit mask flip roda: FL=1, FR=2, RL=4, RR=8
+// Pola roller mecanum robot ini terpasang cermin: dengan rumus standar, vy positif
+// menggeser robot ke KIRI. STRAFE_INVERT membalik vy supaya konvensi seragam di
+// semua klien: vx+ = maju, vy+ = geser KANAN, omega+ = putar searah jarum jam.
+#define STRAFE_INVERT true
+
 #define FLIP_MASK_FL 1
 #define FLIP_MASK_FR 2
 #define FLIP_MASK_RL 4
@@ -112,6 +117,12 @@
 // Timeout watchdog motor (ms) - jika tidak ada perintah, motor berhenti
 #define WATCHDOG_TIMEOUT   500
 
+// Watchdog link (ms): ESP32 mengirim "PING" tiap ~250 ms selama laptop/browser
+// masih menghubunginya. Kalau PING berhenti (WiFi putus, ESP32 hang/reset, kabel
+// UART lepas), SEMUA gerak dihentikan termasuk TURN dan COLLECT. Aktif hanya
+// setelah PING pertama diterima, supaya tetap kompatibel dengan ESP32 lama.
+#define LINK_TIMEOUT       1000
+
 // Ukuran buffer serial
 #define SERIAL_BUF_SIZE    64
 
@@ -121,6 +132,10 @@
 #define SERVO_CENTER       90   // Posisi tengah/istirahat
 #define SERVO_COLLECT_DELAY 300 // Delay antar langkah sweep (ms)
 #define SERVO_COLLECT_STEPS 3   // Jumlah siklus sweep saat COLLECT
+// Rentang pulsa servo (mikrodetik). Servo.write(sudut) memetakan 0-180° ke rentang ini,
+// SERVOUS:<us> menulis pulsa langsung (untuk kalibrasi buka/tutup dari ground station).
+#define SERVO_US_MIN       500
+#define SERVO_US_MAX       2500
 
 // --- Kontrol heading (feedback MPU) ---
 // Konvensi: heading positif = arah putar omega positif (searah jarum jam
@@ -162,6 +177,8 @@ uint8_t flipMask = FLIP_DEFAULT_MASK;
 float gyroRate       = 0.0f;   // derajat/detik, konvensi omega
 float targetHeading  = 0.0f;
 bool turnActive      = false;
+float turnGoal       = 0.0f;   // Sudut TURN yang diminta (derajat, relatif)
+float turnDone       = 0.0f;   // Sudut yang sudah ditempuh sejak TURN mulai
 unsigned long turnStart   = 0;
 unsigned long settleStart = 0;
 unsigned long lastCtrl    = 0;
@@ -172,6 +189,9 @@ uint8_t serialIdx = 0;
 
 // --- Timing ---
 unsigned long lastCmdTime     = 0;  // Waktu perintah terakhir diterima
+unsigned long lastLinkTime    = 0;  // Waktu PING/perintah valid terakhir dari ESP32
+bool pingSeen                 = false;  // ESP32 versi baru (mengirim PING) terdeteksi
+bool linkLost                 = false;
 unsigned long lastTelemetry   = 0;  // Waktu telemetri terakhir dikirim
 unsigned long lastGyroRead    = 0;  // Waktu pembacaan gyro terakhir
 
@@ -183,8 +203,10 @@ int16_t currentVx    = 0;
 int16_t currentVy    = 0;
 int16_t currentOmega = 0;
 
-// --- Flag untuk sekuens collect ---
+// --- Sekuens collect (non-blocking) ---
 bool collectRunning = false;
+uint8_t collectStep = 0;
+unsigned long collectNext = 0;
 
 // ============================================================================
 // SETUP
@@ -223,7 +245,7 @@ void setup() {
   digitalWrite(PIN_LED, LOW);
 
   // --- Inisialisasi servo ---
-  servoPengumpul.attach(PIN_SERVO);
+  servoPengumpul.attach(PIN_SERVO, SERVO_US_MIN, SERVO_US_MAX);
   servoPengumpul.write(SERVO_CENTER);
   DBG_PRINTLN(F("Servo terpasang di pin 2"));
 
@@ -286,8 +308,33 @@ void loop() {
     }
   }
 
-  // --- 5. Loop kontrol heading (hold / turn) ---
+  // --- 5. Watchdog link: ESP32/WiFi/laptop hilang -> berhenti total ---
+  if (pingSeen && now - lastLinkTime >= LINK_TIMEOUT) {
+    if (!linkLost) {
+      linkLost = true;
+      hentikanSemua();
+      Serial.println(F("MSG:LINK putus, robot dihentikan"));
+    }
+  }
+
+  // --- 6. Sekuens collect (non-blocking) ---
+  updateCollect(now);
+
+  // --- 7. Loop kontrol heading (hold / turn) ---
   updateKontrol(now);
+}
+
+// Hentikan gerak, TURN, dan collect sekaligus (failsafe).
+void hentikanSemua() {
+  turnActive = false;
+  currentVx = currentVy = currentOmega = 0;
+  stopAllMotors();
+  targetHeading = heading;
+  if (collectRunning) {
+    collectRunning = false;
+    servoPengumpul.write(SERVO_CENTER);
+    digitalWrite(PIN_LED, LOW);
+  }
 }
 
 // ============================================================================
@@ -316,7 +363,9 @@ void updateKontrol(unsigned long now) {
   lastCtrl = now;
 
   if (turnActive) {
-    float err = wrap180(targetHeading - heading);
+    // Error dari sudut yang sudah ditempuh, bukan wrap180(target - heading):
+    // dengan wrap180, TURN:-180 terbaca +180 dan robot berputar ke arah salah.
+    float err = turnGoal - turnDone;
     if (fabs(err) < TURN_TOLERANCE_DEG && fabs(gyroRate) < 15.0f) {
       if (settleStart == 0) settleStart = now;
       else if (now - settleStart >= TURN_SETTLE_MS) { selesaiTurn(F("selesai")); return; }
@@ -360,7 +409,15 @@ void bacaSerial() {
     if (c == '\n' || c == '\r') {
       if (serialIdx > 0) {
         serialBuf[serialIdx] = '\0';  // Null-terminate string
-        prosesPerintah(serialBuf);
+        if (strcmp(serialBuf, "PING") == 0) {
+          // PING hanya menandai link hidup; TIDAK me-reset watchdog motor,
+          // jadi robot tetap berhenti 500 ms setelah perintah gerak berhenti.
+          pingSeen = true;
+          lastLinkTime = millis();
+          linkLost = false;
+        } else {
+          prosesPerintah(serialBuf);
+        }
         serialIdx = 0;
       }
     } else {
@@ -381,6 +438,8 @@ void bacaSerial() {
 // Format yang didukung:
 //   CMD:vx,vy,omega   → gerakkan robot (nilai -255 s/d 255)
 //   SERVO:sudut        → atur posisi servo (0-180)
+//   SERVOUS:us         → atur pulsa servo langsung (500-2500 mikrodetik)
+//   SERVOOFF           → lepas sinyal servo (lemas, bisa diputar tangan)
 //   COLLECT            → jalankan sekuens pengumpulan bola
 //   FLIP:mask          → balik arah roda, FL=1 FR=2 RL=4 RR=8 (disimpan di EEPROM)
 void prosesPerintah(const char* cmd) {
@@ -390,6 +449,8 @@ void prosesPerintah(const char* cmd) {
   // --- Perintah gerak: CMD:vx,vy,omega ---
   if (strncmp(cmd, "CMD:", 4) == 0) {
     lastCmdTime = millis();
+    lastLinkTime = lastCmdTime;
+    linkLost = false;
     turnActive = false;  // Perintah manual membatalkan TURN
     int vx = 0, vy = 0, omega = 0;
 
@@ -434,16 +495,37 @@ void prosesPerintah(const char* cmd) {
     int sudut = atoi(cmd + 6);
     sudut = constrain(sudut, 0, 180);
 
+    pastikanServo();
     servoPengumpul.write(sudut);
 
     DBG_PRINT(F("Servo diatur ke: "));
     DBG_PRINTLN(sudut);
   }
+  // --- Pulsa servo langsung: SERVOUS:us (kalibrasi) ---
+  else if (strncmp(cmd, "SERVOUS:", 8) == 0) {
+    lastCmdTime = millis();
+    int us = constrain(atoi(cmd + 8), SERVO_US_MIN, SERVO_US_MAX);
+    pastikanServo();
+    servoPengumpul.writeMicroseconds(us);
+    Serial.print(F("MSG:SERVO "));
+    Serial.print(us);
+    Serial.println(F(" us"));
+  }
+  // --- Lepas servo: SERVOOFF ---
+  else if (strcmp(cmd, "SERVOOFF") == 0) {
+    lastCmdTime = millis();
+    if (collectRunning) {
+      collectRunning = false;
+      digitalWrite(PIN_LED, LOW);
+    }
+    servoPengumpul.detach();
+    Serial.println(F("MSG:SERVO lepas (lemas)"));
+  }
   // --- Perintah collect: COLLECT ---
   else if (strcmp(cmd, "COLLECT") == 0) {
     lastCmdTime = millis();
     DBG_PRINTLN(F("Memulai sekuens pengumpulan bola..."));
-    jalankanCollect();
+    mulaiCollect();
   }
   // --- Kalibrasi bias gyro (robot harus diam): CAL ---
   else if (strcmp(cmd, "CAL") == 0) {
@@ -489,7 +571,9 @@ void prosesPerintah(const char* cmd) {
     float deg = constrain(atof(cmd + 5), -360.0f, 360.0f);
     lastCmdTime = millis();
     currentVx = currentVy = currentOmega = 0;
-    targetHeading = wrap180(heading + deg);
+    turnGoal = deg;
+    turnDone = 0.0f;
+    targetHeading = wrap180(heading + deg);  // Untuk telemetri saja
     turnStart = millis();
     settleStart = 0;
     turnActive = true;
@@ -672,6 +756,8 @@ void kalibrasiArah() {
 // Hasilnya dinormalisasi jika ada yang melebihi 255, lalu
 // dipetakan ke PWM (kecepatan) + IN1/IN2 (arah putar).
 void jalankanMecanum(int16_t vx, int16_t vy, int16_t omega) {
+  if (STRAFE_INVERT) vy = -vy;
+
   // Hitung kecepatan tiap roda (bisa negatif = mundur)
   int16_t fl = vx + vy + omega;
   int16_t fr = vx - vy - omega;
@@ -806,6 +892,7 @@ void updateGyro(unsigned long now) {
 
     // Integrasi sederhana: heading += kecepatan_sudut × delta_waktu
     heading = wrap180(heading + gyroRate * dt);
+    if (turnActive) turnDone += gyroRate * dt;
   }
 }
 
@@ -849,34 +936,42 @@ void kirimTelemetri() {
 // ============================================================================
 // SEKUENS PENGUMPULAN BOLA
 // ============================================================================
-// Menggerakkan servo menyapu bolak-balik untuk mengumpulkan bola.
-// Selama sekuens ini, motor tetap berjalan sesuai perintah terakhir.
-void jalankanCollect() {
+// Servo menyapu bolak-balik untuk mengumpulkan bola. NON-BLOCKING: dijalankan
+// bertahap dari loop(), jadi watchdog motor, watchdog link, gyro, dan perintah
+// STOP tetap dilayani selama sekuens (dulu blocking ~2 s dengan motor jalan).
+// Robot dihentikan saat sekuens mulai.
+// Pasang ulang sinyal servo bila sebelumnya dilepas dengan SERVOOFF.
+void pastikanServo() {
+  if (!servoPengumpul.attached()) servoPengumpul.attach(PIN_SERVO, SERVO_US_MIN, SERVO_US_MAX);
+}
+
+void mulaiCollect() {
+  if (collectRunning) return;  // Abaikan COLLECT ganda
+  pastikanServo();
+  turnActive = false;
+  currentVx = currentVy = currentOmega = 0;
+  stopAllMotors();
   collectRunning = true;
+  collectStep = 0;
+  collectNext = millis();
   digitalWrite(PIN_LED, HIGH);  // Nyalakan LED selama collect
+}
 
-  for (uint8_t siklus = 0; siklus < SERVO_COLLECT_STEPS; siklus++) {
-    // Sapu ke kiri (sudut minimum)
-    wdt_reset();  // Reset sebelum tiap delay (masing-masing < 500 ms)
-    servoPengumpul.write(SERVO_MIN_ANGLE);
-    delay(SERVO_COLLECT_DELAY);
-
-    // Sapu ke kanan (sudut maksimum)
-    wdt_reset();
-    servoPengumpul.write(SERVO_MAX_ANGLE);
-    delay(SERVO_COLLECT_DELAY);
-
-    // Cek apakah ada perintah baru masuk selama collect
-    bacaSerial();
+void updateCollect(unsigned long now) {
+  if (!collectRunning || (long)(now - collectNext) < 0) return;
+  const uint8_t langkahSapu = SERVO_COLLECT_STEPS * 2;
+  if (collectStep < langkahSapu) {
+    // Langkah genap: sapu ke sudut minimum, ganjil: ke sudut maksimum
+    servoPengumpul.write((collectStep % 2 == 0) ? SERVO_MIN_ANGLE : SERVO_MAX_ANGLE);
+    collectNext = now + SERVO_COLLECT_DELAY;
+  } else if (collectStep == langkahSapu) {
+    servoPengumpul.write(SERVO_CENTER);
+    collectNext = now + 200;
+  } else {
+    collectRunning = false;
+    digitalWrite(PIN_LED, LOW);
+    Serial.println(F("MSG:COLLECT selesai"));
+    return;
   }
-
-  // Kembali ke posisi tengah
-  wdt_reset();
-  servoPengumpul.write(SERVO_CENTER);
-  delay(200);
-
-  collectRunning = false;
-  digitalWrite(PIN_LED, LOW);
-
-  DBG_PRINTLN(F("Sekuens pengumpulan selesai."));
+  collectStep++;
 }
