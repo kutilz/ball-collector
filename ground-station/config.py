@@ -131,8 +131,38 @@ DILATE_ITER = 2         # Iterasi dilasi (isi lubang blob)
 # State Machine — Threshold transisi antar state
 # ═══════════════════════════════════════════════════════════════
 AREA_APPROACH = 500     # Area minimal (px²) untuk transisi SEARCH → APPROACH
-AREA_COLLECT = 8000     # Area minimal (px²) untuk transisi APPROACH → COLLECT
 CENTER_TOLERANCE = 30   # Toleransi offset_x (px) dianggap "center"
+
+# ── Jarak berhenti di depan bola (APPROACH → COLLECT) ─────────────
+# Menggantikan AREA_COLLECT (8000 px²). Ambang area bergantung detektor (HSV = luas
+# kontur, YOLO = luas bbox w*h, ±1,27x lebih besar), jadi jarak dihitung dari lebar
+# bbox: Z_kamera = f · BALL_DIAMETER_CM / max(w, h)  (model lubang jarum).
+# Uji 2026-11-18: K = Z·lebar ≈ 23–26 m·px di dekat vs teori 25,8 → cukup akurat dekat.
+# Default 25 cm ≈ perilaku lama (COLLECT pada bbox ≈ 100 px ≈ 0,25 m).
+BALL_DIAMETER_CM = 4.0       # Bola ping-pong 40 mm
+STOP_DIST_CM = 25.0          # Jarak bola ke ujung depan robot saat berhenti (0 = menyentuh/nabrak)
+CAM_FRONT_OFFSET_CM = 0.0    # Jarak lensa kamera → ujung depan robot/gripper (BELUM diukur; ukur!)
+# Zona buta dekat: bola keluar frame (bawah) pada ±15–18 cm dari kamera (uji expC 18 Nov).
+# Bila target lebih dekat dari batas ini, robot maju sampai bola di NEAR_VISIBLE_CM
+# (masih terlihat), lalu maju "buta" selama sisa_jarak / kecepatan, lalu COLLECT.
+NEAR_VISIBLE_CM = 20.0       # Jarak kamera terdekat yang masih andal terlihat
+BLIND_PUSH_MAX_SEC = 4.0     # Batas keras lama maju buta (failsafe)
+
+
+def ball_cam_dist_cm(bbox):
+    """Perkiraan jarak bola dari KAMERA (cm) dari bbox (x, y, w, h); None bila tak valid."""
+    if not bbox or len(bbox) < 4:
+        return None
+    size = max(bbox[2], bbox[3])   # max: bola terpotong tepi frame tetap terukur dari sisi utuh
+    if size <= 0:
+        return None
+    return focal_px() * BALL_DIAMETER_CM / size
+
+
+def ball_front_dist_cm(bbox):
+    """Perkiraan jarak bola dari UJUNG DEPAN robot (cm); None bila tak valid."""
+    z = ball_cam_dist_cm(bbox)
+    return None if z is None else z - CAM_FRONT_OFFSET_CM
 
 # ═══════════════════════════════════════════════════════════════
 # Navigasi otomatis — strategi & parameter "bidik pakai gyro"
@@ -237,7 +267,10 @@ CALIBRATION_SPEC = {
     "WORLD_CONF":       (0.05, 0.95, 0.05, "Confidence YOLO-World"),
     # State machine
     "AREA_APPROACH":    (100, 5000, 50, "Area → APPROACH"),
-    "AREA_COLLECT":     (1000, 40000, 500, "Area → COLLECT"),
+    "STOP_DIST_CM":     (0.0, 60.0, 1.0, "Jarak Berhenti (cm)"),
+    "CAM_FRONT_OFFSET_CM": (-5.0, 30.0, 0.5, "Kamera → Depan Robot (cm)"),
+    "NEAR_VISIBLE_CM":  (10.0, 40.0, 1.0, "Batas Lihat Dekat (cm)"),
+    "BLIND_PUSH_MAX_SEC": (0.5, 8.0, 0.5, "Maks Maju Buta (s)"),
     "CENTER_TOLERANCE": (5, 150, 5, "Toleransi Center (px)"),
     # Motor
     "SEARCH_SPEED":     (0, 255, 5, "Speed SEARCH"),
@@ -268,7 +301,8 @@ CALIBRATION_SPEC = {
 # Param yang bertipe float (selain itu di-cast ke int saat update)
 _FLOAT_PARAMS = {"KP_STEERING", "SWEEP_DELAY", "MOTION_HEARTBEAT", "YOLO_CONF", "WORLD_CONF",
                  "AIM_TOL_DEG", "TURN_COMP_DEG", "SETTLE_SEC", "CAMERA_HFOV_DEG",
-                 "SNAPSHOT_INTERVAL", "TURN_GUARD_SEC", "TURN_GUARD_BASE_SEC"}
+                 "SNAPSHOT_INTERVAL", "TURN_GUARD_SEC", "TURN_GUARD_BASE_SEC",
+                 "STOP_DIST_CM", "CAM_FRONT_OFFSET_CM", "NEAR_VISIBLE_CM", "BLIND_PUSH_MAX_SEC"}
 
 
 def focal_px(width=None):

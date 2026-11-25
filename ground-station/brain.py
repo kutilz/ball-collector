@@ -7,6 +7,10 @@ States:
   APPROACH → Mendekati bola
   COLLECT  → Berhenti, aktifkan servo pengumpul, lalu kembali SEARCH
 
+APPROACH → COLLECT saat jarak bola (dari lebar bbox) ≤ STOP_DIST_CM. Bila jarak itu
+lebih dekat dari jangkauan lihat kamera (NEAR_VISIBLE_CM), robot maju "buta" selama
+sisa_jarak / kecepatan (sub-fase APPROACH, bukan state baru), lalu COLLECT.
+
 Dua strategi navigasi (config.NAV_STRATEGY, bisa diganti live dari UI):
 
   "continuous" — strategi awal: SEARCH berputar terus (omega konstan),
@@ -66,6 +70,12 @@ class StateMachine:
         self._note = ""
         self._n_turns = 0               # Jumlah TURN sejak start (statistik)
 
+        # ── Jarak berhenti (STOP_DIST_CM) ────────────────────
+        self._now = time.time()
+        self._push_until = None         # Maju buta ke zona dekat sampai waktu ini
+        self._last_dist = None          # Jarak depan terakhir target (cm), utk "hilang di dekat"
+        self._last_cam_dist = None
+
     # ─────────────────────────────────────────────────────────
     # Kontrol start / stop auto-mode
     # ─────────────────────────────────────────────────────────
@@ -91,6 +101,9 @@ class StateMachine:
         self._last_motion = (0, 0, 0)
         self._aim_deg = None
         self._note = ""
+        self._push_until = None
+        self._last_dist = None
+        self._last_cam_dist = None
 
     @property
     def is_running(self):
@@ -113,6 +126,17 @@ class StateMachine:
         if not self._running:
             return self._stop_cmd()
         ctx = ctx or {}
+        self._now = ctx.get("now", time.time())
+
+        # Maju buta ke zona dekat (bola sudah di bawah jangkauan kamera). Dijalankan
+        # sebelum syarat "frame segar": selama fase ini kamera memang tidak dipakai.
+        if self._push_until is not None:
+            if self._state == "APPROACH" and self._now < self._push_until:
+                return self._cmd(config.APPROACH_SPEED, 0, 0, note=self._note)
+            self._push_until = None
+            if self._state == "APPROACH":
+                self._start_collect()
+                return self._stop_cmd()
 
         strategy = config.NAV_STRATEGY
         if strategy == "gyro" and not ctx.get("gyro_ready", False):
@@ -143,11 +167,14 @@ class StateMachine:
 
         if self._state == "APPROACH":
             if not detected:
+                near = self._push_if_lost_near()
+                if near is not None:
+                    return near
                 self._transition("SEARCH")
                 return self._stop_cmd()
-            if area >= config.AREA_COLLECT:
-                self._start_collect()
-                return self._stop_cmd()
+            stop = self._stop_check({"bbox": detection.get("bbox")}, allow_push=True)
+            if stop is not None:
+                return stop
             omega = int(config.KP_STEERING * offset_x)
             return self._cmd(config.APPROACH_SPEED, 0, omega, note="maju + P-steering")
 
@@ -202,6 +229,10 @@ class StateMachine:
     def _gyro_approach(self, detection):
         pick = self._pick(detection, self._expected_cx)
         if pick is None:
+            # Hilang karena masuk zona buta dekat (bukan karena salah lihat)?
+            near = self._push_if_lost_near()
+            if near is not None:
+                return near
             self._lost += 1
             if self._lost >= config.LOST_FRAMES:
                 self._transition("SEARCH")
@@ -210,9 +241,9 @@ class StateMachine:
             return self._cmd(0, 0, 0, note=f"target hilang {self._lost}/{config.LOST_FRAMES}")
         self._lost = 0
 
-        if pick["area"] >= config.AREA_COLLECT:
-            self._start_collect()
-            return self._stop_cmd()
+        stop = self._stop_check(pick, allow_push=False)
+        if stop is not None:
+            return stop
 
         offset = pick["cx"] - config.FRAME_WIDTH / 2
         angle = math.degrees(math.atan(offset / config.focal_px()))
@@ -223,9 +254,15 @@ class StateMachine:
             self._expected_cx = config.FRAME_WIDTH / 2
             return self._turn(cmd, note=f"bidik {angle:+.1f}° → TURN {cmd:+.1f}°")
 
+        # Maju buta hanya setelah bidikan lurus: kamera tidak bisa mengoreksi lagi.
+        stop = self._stop_check(pick, allow_push=True)
+        if stop is not None:
+            return stop
+
         self._expected_cx = pick["cx"]
+        dist = "" if self._last_dist is None else f", bola ≈{self._last_dist:.0f} cm"
         return self._cmd(config.APPROACH_SPEED, 0, 0,
-                         note=f"maju lurus (sisa {angle:+.1f}°, heading hold)")
+                         note=f"maju lurus (sisa {angle:+.1f}°{dist})")
 
     def _pick(self, detection, expected_cx):
         """Pilih kandidat: terbesar, atau terdekat ke posisi harapan (bila ada).
@@ -236,7 +273,8 @@ class StateMachine:
         """
         cands = detection.get("candidates")
         if cands is None:  # Kompat: hasil deteksi lama tanpa daftar kandidat
-            cands = ([{"cx": detection["cx"], "cy": detection["cy"], "area": detection["area"]}]
+            cands = ([{"cx": detection["cx"], "cy": detection["cy"], "area": detection["area"],
+                       "bbox": detection.get("bbox")}]
                      if detection.get("detected") else [])
         if not cands:
             return None
@@ -246,6 +284,60 @@ class StateMachine:
         if abs(best["cx"] - expected_cx) > config.JUMP_GATE_FRAC * config.FRAME_WIDTH:
             return None
         return best
+
+    # ─────────────────────────────────────────────────────────
+    # Jarak berhenti (sama untuk kedua strategi)
+    # ─────────────────────────────────────────────────────────
+    @staticmethod
+    def _target_in_blind_zone():
+        """True bila jarak berhenti yang diminta lebih dekat dari jangkauan lihat kamera."""
+        return config.STOP_DIST_CM + config.CAM_FRONT_OFFSET_CM < config.NEAR_VISIBLE_CM
+
+    def _stop_check(self, cand, allow_push):
+        """Bandingkan jarak bola dengan STOP_DIST_CM.
+
+        Kembalikan perintah (COLLECT atau mulai maju buta) bila waktunya berhenti,
+        atau None bila robot masih harus mendekat.
+        """
+        dist = config.ball_front_dist_cm(cand.get("bbox"))
+        if dist is None:
+            return None
+        self._last_dist = dist
+        self._last_cam_dist = dist + config.CAM_FRONT_OFFSET_CM
+
+        if dist <= config.STOP_DIST_CM:
+            self._note = f"berhenti: bola ≈{dist:.0f} cm (target {config.STOP_DIST_CM:.0f} cm)"
+            self._start_collect()
+            return self._stop_cmd()
+        if allow_push and self._target_in_blind_zone() \
+                and self._last_cam_dist <= config.NEAR_VISIBLE_CM:
+            return self._start_push(dist)
+        return None
+
+    def _push_if_lost_near(self):
+        """Target hilang tepat setelah terlihat sangat dekat → anggap masuk zona buta."""
+        if (self._target_in_blind_zone() and self._last_cam_dist is not None
+                and self._last_cam_dist <= config.NEAR_VISIBLE_CM + 5.0):
+            return self._start_push(self._last_dist)
+        return None
+
+    def _start_push(self, dist):
+        """Maju lurus tanpa kamera sejauh (dist − STOP_DIST_CM), lalu COLLECT.
+
+        Waktu = jarak / kecepatan. Kecepatan hanya terukur di PWM 100 (11,3 cm/s);
+        di PWM lain dianggap sebanding (perkiraan). Dibatasi BLIND_PUSH_MAX_SEC.
+        """
+        remaining = max(0.0, dist - config.STOP_DIST_CM)
+        pwm = min(config.APPROACH_SPEED, config.SAFETY_MAX_PWM)
+        speed = config.SPEED_CM_PER_S_AT_100 * pwm / 100.0
+        if remaining <= 0 or speed <= 0:
+            self._start_collect()
+            return self._stop_cmd()
+        secs = min(remaining / speed, config.BLIND_PUSH_MAX_SEC)
+        self._push_until = self._now + secs
+        self._last_cam_dist = None   # cegah memicu ulang
+        return self._cmd(config.APPROACH_SPEED, 0, 0,
+                         note=f"maju buta {remaining:.0f} cm ≈ {secs:.1f} s (bola di zona buta)")
 
     # ─────────────────────────────────────────────────────────
     # COLLECT (sama untuk kedua strategi)
@@ -310,6 +402,8 @@ class StateMachine:
         self._state_enter_time = now
         self._confirm = 0
         self._lost = 0
+        self._last_dist = None
+        self._last_cam_dist = None
 
     # ─────────────────────────────────────────────────────────
     # Pembentuk perintah

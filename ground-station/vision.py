@@ -273,8 +273,9 @@ class VisionPipeline:
         Returns daftar (cx, cy, area, bbox, conf) atau [].
 
         Catatan: "area" di sini = luas bounding box (w*h), bukan luas kontur.
-        Skalanya berbeda dari HSV, jadi ambang AREA_APPROACH/AREA_COLLECT
-        mungkin perlu dikalibrasi ulang saat memakai backend ini.
+        Skalanya berbeda dari HSV, jadi ambang AREA_APPROACH mungkin perlu
+        dikalibrasi ulang saat memakai backend ini. (Jarak berhenti tidak
+        terpengaruh: dihitung dari lebar bbox, lihat config.ball_cam_dist_cm.)
         """
         allowed = [] if kind == "yoloworld" else list(getattr(config, "YOLO_CLASSES", []) or [])
         try:

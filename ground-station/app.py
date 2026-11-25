@@ -465,6 +465,10 @@ def _ack_detail(status):
     return comms.get_status().get("last_error") or "Gagal kirim ke robot"
 
 
+def _round_or_none(v, nd=1):
+    return None if v is None else round(v, nd)
+
+
 @socketio.on("manual_control")
 def handle_manual_control(data):
     """Terima perintah manual dari joystick/keyboard + balas feedback."""
@@ -658,6 +662,9 @@ def _main_loop():
             "ball_x": detection.get("cx", 0),
             "ball_y": detection.get("cy", 0),
             "ball_area": round(detection.get("area", 0), 1),
+            # Jarak bola ke ujung depan robot (cm), perkiraan dari lebar bbox.
+            "ball_dist_cm": (None if not detection.get("detected")
+                             else _round_or_none(config.ball_front_dist_cm(detection.get("bbox")))),
             "offset_x": detection.get("offset_x", 0),
             "offset_y": detection.get("offset_y", 0),
             "cmd_vx": disp_cmd.get("vx", 0),

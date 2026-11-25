@@ -23,14 +23,18 @@ let driveRobot = false;
 let manualSpeed = 80;   // disinkron dari kalibrasi MANUAL_SPEED
 let manualTurn = 70;    // disinkron dari kalibrasi MANUAL_TURN
 let safetyMaxPwm = 255; // disinkron dari kalibrasi SAFETY_MAX_PWM (batas di server)
-let speedCmpsAt100 = 11.3; // satu titik ukur 2026-11-18 (dari server), hanya petunjuk
+let speedCmpsAt100 = 11.3;
+let stopDistCm = 25;      // disinkron dari kalibrasi STOP_DIST_CM
+let nearVisibleCm = 20;   // NEAR_VISIBLE_CM: lebih dekat dari ini kamera tak melihat bola
+let camFrontOffsetCm = 0; // CAM_FRONT_OFFSET_CM // satu titik ukur 2026-11-18 (dari server), hanya petunjuk
 let frameW = 640, frameH = 480;
 let keysPressed = new Set();
 
 // Kelompok kalibrasi → urutan key di tiap kartu
 const CALIB_GROUPS = {
     vision: ["MIN_CONTOUR_AREA", "ERODE_ITER", "DILATE_ITER", "YOLO_CONF", "WORLD_CONF"],
-    fsm:    ["AREA_APPROACH", "AREA_COLLECT", "CENTER_TOLERANCE"],
+    fsm:    ["AREA_APPROACH", "STOP_DIST_CM", "CAM_FRONT_OFFSET_CM", "NEAR_VISIBLE_CM",
+             "BLIND_PUSH_MAX_SEC", "CENTER_TOLERANCE"],
     motor:  ["SEARCH_SPEED", "APPROACH_SPEED", "MANUAL_SPEED", "MANUAL_TURN", "KP_STEERING",
              "SAFETY_MAX_PWM", "MOTION_HEARTBEAT"],
     servo:  ["SERVO_OPEN", "SERVO_CLOSE", "SWEEP_DELAY"],
@@ -39,7 +43,7 @@ const CALIB_GROUPS = {
 };
 const FLOAT_KEYS = new Set(["KP_STEERING", "SWEEP_DELAY", "MOTION_HEARTBEAT", "YOLO_CONF", "WORLD_CONF",
     "AIM_TOL_DEG", "TURN_COMP_DEG", "SETTLE_SEC", "CAMERA_HFOV_DEG", "SNAPSHOT_INTERVAL",
-    "TURN_GUARD_SEC", "TURN_GUARD_BASE_SEC"]);
+    "TURN_GUARD_SEC", "TURN_GUARD_BASE_SEC", "CAM_FRONT_OFFSET_CM", "BLIND_PUSH_MAX_SEC"]);
 
 // ═══════════════════════════════════════════════════════════════
 // Referensi DOM
@@ -314,6 +318,7 @@ socket.on("calibration_updated", (data) => {
     if (data.key === "MANUAL_SPEED") manualSpeed = data.value;
     if (data.key === "MANUAL_TURN") manualTurn = data.value;
     if (data.key === "SAFETY_MAX_PWM") safetyMaxPwm = data.value;
+    syncStopDistFromCalib({ [data.key]: data.value });
     updateSpeedUI();
 });
 
@@ -332,6 +337,13 @@ socket.on("calibration_state", (state) => {
 // ═══════════════════════════════════════════════════════════════
 // UI updates
 // ═══════════════════════════════════════════════════════════════
+function setBallDist(cm) {
+    const out = $("ball-dist-now");
+    if (!out) return;
+    if (cm === null || cm === undefined) { out.textContent = "—"; return; }
+    out.textContent = `≈ ${Math.round(cm)} cm` + (cm <= stopDistCm ? " · berhenti" : "");
+}
+
 function updateDetection(data) {
     if (data.detected) {
         el.teleDetected.textContent = "✓ Ya";
@@ -339,6 +351,7 @@ function updateDetection(data) {
         el.teleBallX.textContent = data.ball_x;
         el.teleBallY.textContent = data.ball_y;
         el.teleBallArea.textContent = data.ball_area;
+        setBallDist(data.ball_dist_cm);
         el.teleOffsetX.textContent = data.offset_x;
         el.teleOffsetY.textContent = data.offset_y;
     } else {
@@ -346,6 +359,7 @@ function updateDetection(data) {
         el.teleDetected.style.color = "var(--text-muted)";
         el.teleBallX.textContent = el.teleBallY.textContent = "—";
         el.teleBallArea.textContent = el.teleOffsetX.textContent = el.teleOffsetY.textContent = "—";
+        setBallDist(null);
     }
     updateRadar(data);
 }
@@ -697,8 +711,43 @@ function syncManualFromCalib(values) {
     if ("MANUAL_SPEED" in values) manualSpeed = values.MANUAL_SPEED;
     if ("MANUAL_TURN" in values) manualTurn = values.MANUAL_TURN;
     if ("SAFETY_MAX_PWM" in values) safetyMaxPwm = values.SAFETY_MAX_PWM;
+    syncStopDistFromCalib(values);
     updateSpeedUI();
 }
+
+// ── Slider jarak berhenti di depan bola (kartu Mode Operasi) ─────
+// Kunci kalibrasi STOP_DIST_CM; slider yang sama juga ada di kartu Kalibrasi.
+function syncStopDistFromCalib(values) {
+    if ("STOP_DIST_CM" in values) stopDistCm = values.STOP_DIST_CM;
+    if ("NEAR_VISIBLE_CM" in values) nearVisibleCm = values.NEAR_VISIBLE_CM;
+    if ("CAM_FRONT_OFFSET_CM" in values) camFrontOffsetCm = values.CAM_FRONT_OFFSET_CM;
+    updateStopDistUI();
+}
+
+function updateStopDistUI() {
+    const sl = $("stop-dist-slider");
+    if (!sl) return;
+    if (document.activeElement !== sl) sl.value = stopDistCm;
+    $("stop-dist-val").textContent = Math.round(stopDistCm);
+    const note = $("stop-dist-note");
+    const blind = stopDistCm + camFrontOffsetCm < nearVisibleCm;
+    note.textContent = blind
+        ? `Di bawah ±${Math.round(nearVisibleCm - camFrontOffsetCm)} cm bola tak terlihat kamera: robot maju buta `
+          + "sesuai perkiraan kecepatan, lalu berhenti. 0 = menyentuh bola."
+        : "Robot berhenti saat jarak bola (dari lebar kotak deteksi) mencapai nilai ini.";
+    note.classList.toggle("warn", blind);
+}
+
+(() => {
+    const sl = $("stop-dist-slider");
+    if (!sl) return;
+    sl.addEventListener("input", () => {
+        stopDistCm = parseFloat(sl.value);
+        updateStopDistUI();
+        socket.emit("update_calibration", { key: "STOP_DIST_CM", value: stopDistCm });
+    });
+    sl.addEventListener("change", () => sl.blur());   // fokus di slider tak boleh menahan WASD
+})();
 
 // ── Slider kecepatan di kartu Kontrol Manual ────────────────────
 // Memakai kunci kalibrasi yang sama (MANUAL_SPEED / MANUAL_TURN), jadi slider ini dan
@@ -872,8 +921,9 @@ document.querySelectorAll(".btn-ctrl").forEach(btn => {
         btn.addEventListener("click", () => sendManualCmd(0, 0, 0, CMD_LABEL.stop, btn.id));
         return;
     }
-    const press = () => sendManualCmd(...cmdVector(name), CMD_LABEL[name], btn.id);
-    const release = () => sendManualCmd(0, 0, 0, CMD_LABEL.stop, btn.id);
+    // lastKeyVec dikosongkan: penekanan keyboard berikutnya pasti dikirim ulang.
+    const press = () => { lastKeyVec = null; sendManualCmd(...cmdVector(name), CMD_LABEL[name], btn.id); };
+    const release = () => { lastKeyVec = null; sendManualCmd(0, 0, 0, CMD_LABEL.stop, btn.id); };
     btn.addEventListener("mousedown", press);
     btn.addEventListener("mouseup", release);
     btn.addEventListener("mouseleave", (e) => { if (e.buttons) release(); });
@@ -949,8 +999,50 @@ el.btnCalibReset.addEventListener("click", () => socket.emit("reset_calibration"
 // ═══════════════════════════════════════════════════════════════
 // Keyboard — WASD gerak, QE rotasi
 // ═══════════════════════════════════════════════════════════════
-const KEY_CMD = { w: "forward", s: "backward", a: "left", d: "right", q: "ccw", e: "cw" };
+// Pakai e.code (posisi tombol fisik) supaya Shift/Caps Lock tidak memecah satu tombol jadi dua.
+const MOVE_KEYS = { KeyW: "w", KeyS: "s", KeyA: "a", KeyD: "d", KeyQ: "q", KeyE: "e" };
 const KEY_BTN = { w: "btn-fwd", s: "btn-bwd", a: "btn-left", d: "btn-right", q: "btn-ccw", e: "btn-cw" };
+const heldMoves = new Set();   // tombol gerak yang sedang ditahan (w/a/s/d/q/e)
+let lastKeyVec = "0,0,0";
+
+// Gabungkan semua tombol yang ditahan jadi satu vektor: W+D = serong kanan-depan,
+// W+E = maju sambil belok, W+S saling meniadakan. Firmware menormalisasi bila > 255.
+function keyboardVector() {
+    const h = k => heldMoves.has(k) ? 1 : 0;
+    const fwd = h("w") - h("s"), right = h("d") - h("a"), rot = h("e") - h("q");
+    return [fwd * manualSpeed, right * manualSpeed, rot * manualTurn];
+}
+
+function keyboardLabel() {
+    const parts = [];
+    const h = k => heldMoves.has(k);
+    const fwd = h("w") - h("s"), right = h("d") - h("a"), rot = h("e") - h("q");
+    if (fwd) parts.push(fwd > 0 ? "MAJU" : "MUNDUR");
+    if (right) parts.push(right > 0 ? "KANAN" : "KIRI");
+    if (rot) parts.push(rot > 0 ? "PUTAR KANAN" : "PUTAR KIRI");
+    return parts.length ? parts.join(" + ") : CMD_LABEL.stop;
+}
+
+// Kirim ulang hanya bila vektor berubah (heartbeat server menjaga gerak tetap jalan).
+function applyKeyboard(force = false) {
+    const vec = keyboardVector();
+    const sig = vec.join(",");
+    if (!force && sig === lastKeyVec) return;
+    lastKeyVec = sig;
+    sendManualCmd(...vec, keyboardLabel(), null);
+    document.querySelectorAll(".btn-ctrl.pressed").forEach(b => b.classList.remove("pressed"));
+    heldMoves.forEach(k => $(KEY_BTN[k])?.classList.add("pressed"));
+}
+
+// FAILSAFE: jendela kehilangan fokus (alt-tab, pindah tab) → keyup tidak akan datang.
+function releaseAllKeys() {
+    keysPressed.clear();
+    if (!heldMoves.size) return;
+    heldMoves.clear();
+    applyKeyboard(true);
+}
+window.addEventListener("blur", releaseAllKeys);
+document.addEventListener("visibilitychange", () => { if (document.hidden) releaseAllKeys(); });
 
 // Kolom teks mengabaikan hotkey; slider (type=range) TIDAK, supaya tombol yang sedang ditahan
 // tetap mengirim STOP saat dilepas walau fokus ada di slider kecepatan.
@@ -961,30 +1053,33 @@ function isTypingTarget(t) {
 }
 
 document.addEventListener("keydown", (e) => {
-    const key = e.key.toLowerCase();
-    if (keysPressed.has(key)) return;
-    keysPressed.add(key);
+    if (e.repeat || keysPressed.has(e.code)) return;
     if (isTypingTarget(e.target)) return;
+    keysPressed.add(e.code);
+    if (e.ctrlKey || e.altKey || e.metaKey) return;   // Ctrl+S, Alt+D, dll. bukan perintah gerak
 
-    if (key in KEY_CMD) {
-        const name = KEY_CMD[key];
-        sendManualCmd(...cmdVector(name), CMD_LABEL[name], KEY_BTN[key]);
-        highlightButton(KEY_BTN[key]);
-    } else if (key === " ") {
+    const mv = MOVE_KEYS[e.code];
+    if (mv) {
+        heldMoves.add(mv);
+        applyKeyboard();
+    } else if (e.code === "Space") {
         e.preventDefault();
+        heldMoves.clear();
+        lastKeyVec = "0,0,0";
         sendManualCmd(0, 0, 0, CMD_LABEL.stop, "btn-stop");
         highlightButton("btn-stop");
-    } else if (key === "t") {
+    } else if (e.code === "KeyT") {
         socket.emit("toggle_mode", { mode: isAutoMode ? "manual" : "auto" });
     }
 });
 
+// keyup tombol gerak SELALU diproses, walau fokus sudah pindah ke kolom teks:
+// kalau diabaikan, STOP tidak pernah terkirim dan heartbeat membuat robot terus jalan.
 document.addEventListener("keyup", (e) => {
-    const key = e.key.toLowerCase();
-    keysPressed.delete(key);
-    if (isTypingTarget(e.target)) return;
-    if (key in KEY_CMD) { sendManualCmd(0, 0, 0, CMD_LABEL.stop, KEY_BTN[key]); unhighlightAllButtons(); }
-    if (key === " ") unhighlightAllButtons();
+    keysPressed.delete(e.code);
+    const mv = MOVE_KEYS[e.code];
+    if (mv && heldMoves.delete(mv)) applyKeyboard();
+    if (e.code === "Space") unhighlightAllButtons();
 });
 
 function highlightButton(id) {
