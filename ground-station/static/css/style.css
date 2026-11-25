@@ -1445,3 +1445,11 @@ input[type="range"].hsv-slider::-moz-range-thumb {
 .speed-row input[type="range"]::-moz-range-thumb {
     width: 16px; height: 16px; border-radius: 50%; background: var(--accent-blue); border: none;
 }
+
+/* ── Kalibrasi servo ─────────────────────────────────────────── */
+#card-calib-servo .card-body { display: flex; flex-direction: column; gap: 10px; }
+.servo-live-toggle { display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; }
+.servo-step-row { display: flex; gap: 6px; justify-content: center; flex-wrap: wrap; }
+.servo-save-grid { display: grid; gap: 6px; }
+.servo-save { display: grid; grid-template-columns: 44px auto 1fr auto auto; align-items: center; gap: 6px; font-size: 12px; font-variant-numeric: tabular-nums; }
+.servo-save .label { color: var(--text-secondary); }

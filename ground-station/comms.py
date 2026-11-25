@@ -179,6 +179,7 @@ class RobotComms:
         self._pending_motion = None                # (vx,vy,omega) terbaru / None
         self._pending_motion_action = None         # label aksi utk ack / None
         self._pending_oneshots = collections.deque()  # (q, action) FIFO
+        self._pending_servo_live = None   # µs terbaru dari slider kalibrasi (coalesced)
         self._cmd_event = threading.Event()        # bangunkan worker
         self._cmd_worker = None
         self._cmd_worker_running = False
@@ -825,6 +826,45 @@ class RobotComms:
         self._cmd_event.set()
         return "queued"
 
+    def send_servo_us(self, us, action=None):
+        """Antri pulsa servo (µs) sebagai one-shot FIFO (buka/tutup). Non-blocking."""
+        if self._command_target() is None:
+            return "skipped"
+        self._ensure_command_worker()
+        us = self._clamp(int(us), config.SERVO_US_MIN, config.SERVO_US_MAX)
+        with self._cmd_lock:
+            self._pending_servo_live = None   # perintah tegas menggantikan posisi slider
+            self._pending_oneshots.append((f"SERVOUS:{us}", action))
+        self._cmd_event.set()
+        return "queued"
+
+    def set_servo_live(self, us):
+        """Posisi servo dari slider kalibrasi: hanya nilai TERBARU yang dikirim.
+
+        Menggeser slider menghasilkan puluhan nilai per detik; satu kirim HTTP
+        ±170 ms. Antrian FIFO akan menumpuk dan servo tertinggal jauh, jadi
+        nilai lama ditimpa (coalesced), seperti perintah gerak.
+        """
+        if self._command_target() is None:
+            return "skipped"
+        self._ensure_command_worker()
+        us = self._clamp(int(us), config.SERVO_US_MIN, config.SERVO_US_MAX)
+        with self._cmd_lock:
+            self._pending_servo_live = us
+        self._cmd_event.set()
+        return "queued"
+
+    def send_servo_off(self, action=None):
+        """Lepas sinyal servo (lemas). Non-blocking."""
+        if self._command_target() is None:
+            return "skipped"
+        self._ensure_command_worker()
+        with self._cmd_lock:
+            self._pending_servo_live = None
+            self._pending_oneshots.append(("SERVOOFF", action))
+        self._cmd_event.set()
+        return "queued"
+
     def send_collect(self, action=None):
         """Antri sekuens collect (one-shot FIFO). Non-blocking."""
         if self._command_target() is None:
@@ -917,6 +957,13 @@ class RobotComms:
                     # Bisa jadi tidak sampai, bisa juga sampai tapi balasannya
                     # hilang. Beri 2 s untuk telemetri membuktikan robot berputar.
                     self._turn_deadline = min(self._turn_deadline, time.time() + 2.0)
+
+            # 1b. Posisi servo dari slider — hanya nilai terbaru, tanpa ack.
+            with self._cmd_lock:
+                live = self._pending_servo_live
+                self._pending_servo_live = None
+            if live is not None:
+                self._http_send(f"SERVOUS:{live}")
 
             # 2. Motion — kirim yang terbaru (coalesced) atau heartbeat.
             with self._cmd_lock:

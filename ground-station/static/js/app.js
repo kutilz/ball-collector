@@ -37,7 +37,7 @@ const CALIB_GROUPS = {
              "BLIND_PUSH_MAX_SEC", "CENTER_TOLERANCE"],
     motor:  ["SEARCH_SPEED", "APPROACH_SPEED", "MANUAL_SPEED", "MANUAL_TURN", "KP_STEERING",
              "SAFETY_MAX_PWM", "MOTION_HEARTBEAT"],
-    servo:  ["SERVO_OPEN", "SERVO_CLOSE", "SWEEP_DELAY"],
+    servo:  ["SERVO_OPEN_US", "SERVO_CLOSE_US", "SWEEP_DELAY"],
     nav:    ["AIM_TOL_DEG", "TURN_COMP_DEG", "SEARCH_STEP_DEG", "SETTLE_SEC", "TURN_GUARD_SEC",
              "TURN_GUARD_BASE_SEC", "CONFIRM_FRAMES", "LOST_FRAMES", "CAMERA_HFOV_DEG", "SNAPSHOT_INTERVAL"],
 };
@@ -293,7 +293,7 @@ socket.on("logging_status", (data) => {
         data.active ? "success" : "warning");
 });
 
-socket.on("servo_result", (data) => showToast(`Servo: ${data.cmd.toUpperCase()} (${data.angle}°)`, "info"));
+socket.on("servo_result", (data) => showToast(`Servo: ${data.cmd.toUpperCase()} (${data.us} µs)`, "info"));
 
 // Feedback per-perintah: berhasil terkirim / diabaikan / gagal
 socket.on("cmd_ack", (data) => {
@@ -319,6 +319,7 @@ socket.on("calibration_updated", (data) => {
     if (data.key === "MANUAL_TURN") manualTurn = data.value;
     if (data.key === "SAFETY_MAX_PWM") safetyMaxPwm = data.value;
     syncStopDistFromCalib({ [data.key]: data.value });
+    syncServoFromCalib({ [data.key]: data.value });
     updateSpeedUI();
 });
 
@@ -712,8 +713,66 @@ function syncManualFromCalib(values) {
     if ("MANUAL_TURN" in values) manualTurn = values.MANUAL_TURN;
     if ("SAFETY_MAX_PWM" in values) safetyMaxPwm = values.SAFETY_MAX_PWM;
     syncStopDistFromCalib(values);
+    syncServoFromCalib(values);
     updateSpeedUI();
 }
+
+// ── Kalibrasi servo (kartu Kalibrasi Servo) ─────────────────────
+// Slider mengirim pulsa (µs) langsung ke firmware (SERVOUS:<us>). Server hanya
+// meneruskan nilai terbaru, jadi menggeser cepat tidak membuat antrian menumpuk.
+// Servo baru bergerak bila centang "Gerakkan servo" aktif (cegah gerak tak sengaja).
+let servoOpenUs = 1000, servoCloseUs = 2000;
+
+function syncServoFromCalib(values) {
+    if ("SERVO_OPEN_US" in values) servoOpenUs = values.SERVO_OPEN_US;
+    if ("SERVO_CLOSE_US" in values) servoCloseUs = values.SERVO_CLOSE_US;
+    const o = $("servo-open-us"), c = $("servo-close-us");
+    if (o) o.textContent = Math.round(servoOpenUs);
+    if (c) c.textContent = Math.round(servoCloseUs);
+}
+
+(() => {
+    const sl = $("servo-test-slider"), live = $("servo-live-enable");
+    if (!sl || !live) return;
+    const show = () => {
+        const us = +sl.value;
+        $("servo-test-val").textContent = us;
+        // Pemetaan firmware: 500–2500 µs = 0–180° (perkiraan; servo asli bisa beda).
+        $("servo-test-deg").textContent = `≈ ${Math.round((us - 500) / 2000 * 180)}°`;
+    };
+    const send = () => { if (live.checked) socket.emit("servo_live", { us: +sl.value }); };
+    const setUs = (us) => { sl.value = Math.max(500, Math.min(2500, us)); show(); send(); };
+
+    sl.addEventListener("input", () => { show(); send(); });
+    sl.addEventListener("change", () => sl.blur());   // fokus di slider tak boleh menahan WASD
+    live.addEventListener("change", () => {
+        live.blur();
+        if (live.checked) { send(); showToast(`Servo uji aktif: ${sl.value} µs`, "info"); }
+    });
+    document.querySelectorAll("[data-servo-step]").forEach(btn => btn.addEventListener("click", () => {
+        const st = btn.dataset.servoStep;
+        setUs(st === "center" ? 1500 : +sl.value + +st);
+    }));
+    const save = (key, label) => {
+        socket.emit("update_calibration", { key, value: +sl.value });
+        showToast(`${label} disimpan: ${sl.value} µs`, "success");
+    };
+    $("servo-set-open").addEventListener("click", () => save("SERVO_OPEN_US", "Posisi buka"));
+    $("servo-set-close").addEventListener("click", () => save("SERVO_CLOSE_US", "Posisi tutup"));
+    // "Coba" memakai jalur yang sama dengan mode Otomatis; slider ikut pindah ke nilainya.
+    $("servo-try-open").addEventListener("click", () => {
+        sl.value = servoOpenUs; show(); socket.emit("servo_cmd", { cmd: "open" });
+    });
+    $("servo-try-close").addEventListener("click", () => {
+        sl.value = servoCloseUs; show(); socket.emit("servo_cmd", { cmd: "close" });
+    });
+    $("servo-off").addEventListener("click", () => {
+        live.checked = false;
+        socket.emit("servo_off", {});
+        showToast("Servo dilemaskan. Centang lagi untuk menggerakkan.", "info");
+    });
+    show();
+})();
 
 // ── Slider jarak berhenti di depan bola (kartu Mode Operasi) ─────
 // Kunci kalibrasi STOP_DIST_CM; slider yang sama juga ada di kartu Kalibrasi.

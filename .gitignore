@@ -43,6 +43,7 @@ ground-station/uploads/
 
 # Kalibrasi arah per robot/laptop
 ground-station/drive_settings.json
+ground-station/servo_settings.json
 
 
 # OS generated files

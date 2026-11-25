@@ -9,6 +9,7 @@ Flask + Flask-SocketIO untuk:
 
 import os
 import gzip
+import json
 import time
 import threading
 import cv2
@@ -53,7 +54,33 @@ brain = StateMachine()
 comms = RobotComms()
 logger = DataLogger()
 
-# Snapshot nilai kalibrasi default (sebelum dimutasi runtime) untuk tombol reset
+# ── Kalibrasi servo disimpan ke file (bukan git) supaya bertahan restart ──
+_SERVO_KEYS = ("SERVO_OPEN_US", "SERVO_CLOSE_US")
+
+
+def _load_servo_settings():
+    try:
+        with open(config.SERVO_SETTINGS_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return
+    for key in _SERVO_KEYS:
+        if key in data:
+            config.update_calibration(key, data[key])
+
+
+def _save_servo_settings():
+    try:
+        with open(config.SERVO_SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump({k: getattr(config, k) for k in _SERVO_KEYS}, f, indent=2)
+    except OSError as e:
+        print(f"[Servo] Gagal menyimpan kalibrasi servo: {e}")
+
+
+_load_servo_settings()
+
+# Snapshot nilai kalibrasi default (sebelum dimutasi runtime) untuk tombol reset.
+# Diambil SETELAH memuat servo_settings.json: reset tidak menghapus hasil kalibrasi servo.
 _CALIBRATION_DEFAULTS = config.get_calibration()
 
 # ═══════════════════════════════════════════════════════════════
@@ -332,6 +359,8 @@ def handle_update_calibration(data):
     value = data.get("value")
     final = config.update_calibration(key, value)
     if final is not None:
+        if key in _SERVO_KEYS:
+            _save_servo_settings()
         emit("calibration_updated", {"key": key, "value": final}, broadcast=True)
 
 
@@ -340,6 +369,7 @@ def handle_reset_calibration(data):
     """Kembalikan semua parameter kalibrasi ke nilai default modul."""
     for key, val in _CALIBRATION_DEFAULTS.items():
         config.update_calibration(key, val)
+    _save_servo_settings()
     emit("calibration_state", config.get_calibration(), broadcast=True)
 
 
@@ -528,13 +558,34 @@ def handle_toggle_logging(data):
 def handle_servo_cmd(data):
     """Perintah servo manual + balas feedback."""
     cmd = data.get("cmd", "open")
-    angle = config.SERVO_OPEN if cmd == "open" else config.SERVO_CLOSE
+    us = config.SERVO_OPEN_US if cmd == "open" else config.SERVO_CLOSE_US
     label = "SERVO BUKA" if cmd == "open" else "SERVO TUTUP"
     # Non-blocking: enqueue. ok/error menyusul async; skipped balas seketika.
-    status = comms.send_servo(angle, action=label)
-    emit("servo_result", {"cmd": cmd, "angle": angle, "status": status})
+    status = comms.send_servo_us(us, action=label)
+    emit("servo_result", {"cmd": cmd, "us": us, "status": status})
     if status == "skipped":
         emit("cmd_ack", {"action": label, "status": "skipped",
+                         "detail": _ack_detail("skipped")})
+
+
+@socketio.on("servo_live")
+def handle_servo_live(data):
+    """Slider kalibrasi servo: kirim pulsa (µs) terbaru, tanpa antrian menumpuk."""
+    try:
+        us = int(data.get("us"))
+    except (TypeError, ValueError):
+        return
+    if comms.set_servo_live(us) == "skipped":
+        emit("cmd_ack", {"action": "SERVO UJI", "status": "skipped",
+                         "detail": _ack_detail("skipped")})
+
+
+@socketio.on("servo_off")
+def handle_servo_off(data=None):
+    """Lepas sinyal servo (lemas, bisa diputar tangan)."""
+    status = comms.send_servo_off(action="SERVO LEPAS")
+    if status == "skipped":
+        emit("cmd_ack", {"action": "SERVO LEPAS", "status": "skipped",
                          "detail": _ack_detail("skipped")})
 
 
@@ -609,9 +660,9 @@ def _main_loop():
                     comms.send_command(cmd["vx"], cmd["vy"], cmd["omega"])
 
                 if cmd["servo_cmd"] == "OPEN":
-                    comms.send_servo(config.SERVO_OPEN)
+                    comms.send_servo_us(config.SERVO_OPEN_US)
                 elif cmd["servo_cmd"] == "CLOSE":
-                    comms.send_servo(config.SERVO_CLOSE)
+                    comms.send_servo_us(config.SERVO_CLOSE_US)
             elif comms.motion_intent() != (0, 0, 0) or comms.is_turning():
                 # FAILSAFE: tanpa penglihatan / kanal macet -> berhenti (sekali).
                 comms.send_command(0, 0, 0)

@@ -545,9 +545,49 @@
                 <div class="card" id="card-calib-servo">
                     <div class="card-header">
                         <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
-                        <h2>Servo Collector</h2>
+                        <h2>Kalibrasi Servo</h2>
                     </div>
-                    <div class="card-body calib-group" data-group="servo"></div>
+                    <div class="card-body">
+                        <div class="speed-note warn" id="servo-cal-req">
+                            Butuh firmware Arduino terbaru + "Kemudikan Robot Asli" aktif.
+                            Percobaan pertama: lepas gripper dulu, geser pelan dari tengah.
+                        </div>
+                        <label class="servo-live-toggle">
+                            <input type="checkbox" id="servo-live-enable">
+                            Gerakkan servo saat slider digeser
+                        </label>
+                        <div class="speed-row">
+                            <label for="servo-test-slider">Pulsa uji</label>
+                            <span class="speed-val"><b id="servo-test-val">1500</b> µs <span id="servo-test-deg">≈ 90°</span></span>
+                            <input type="range" id="servo-test-slider" min="500" max="2500" step="10" value="1500">
+                        </div>
+                        <div class="servo-step-row">
+                            <button class="btn btn-sm btn-ghost" data-servo-step="-50">−50</button>
+                            <button class="btn btn-sm btn-ghost" data-servo-step="-10">−10</button>
+                            <button class="btn btn-sm btn-ghost" data-servo-step="center">Tengah</button>
+                            <button class="btn btn-sm btn-ghost" data-servo-step="10">+10</button>
+                            <button class="btn btn-sm btn-ghost" data-servo-step="50">+50</button>
+                        </div>
+                        <div class="servo-save-grid">
+                            <div class="servo-save">
+                                <span class="label">Buka</span>
+                                <b class="mono" id="servo-open-us">1000</b> µs
+                                <button class="btn btn-sm btn-accent" id="servo-set-open">Jadikan Buka</button>
+                                <button class="btn btn-sm btn-ghost" id="servo-try-open">Coba</button>
+                            </div>
+                            <div class="servo-save">
+                                <span class="label">Tutup</span>
+                                <b class="mono" id="servo-close-us">2000</b> µs
+                                <button class="btn btn-sm btn-accent" id="servo-set-close">Jadikan Tutup</button>
+                                <button class="btn btn-sm btn-ghost" id="servo-try-close">Coba</button>
+                            </div>
+                        </div>
+                        <div class="servo-step-row">
+                            <button class="btn btn-sm btn-ghost" id="servo-off">Lemaskan servo</button>
+                        </div>
+                        <div class="speed-note">Nilai Buka/Tutup tersimpan otomatis (servo_settings.json) dan dipakai mode Otomatis.</div>
+                        <div class="calib-group" data-group="servo"></div>
+                    </div>
                 </div>
 
                 <div class="card" id="card-calib-nav">

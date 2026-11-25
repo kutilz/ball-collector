@@ -214,8 +214,17 @@ MANUAL_TURN = 70        # Kecepatan rotasi kontrol manual
 # ═══════════════════════════════════════════════════════════════
 # Servo — Sudut buka/tutup mekanisme pengumpul
 # ═══════════════════════════════════════════════════════════════
-SERVO_OPEN = 30         # Sudut servo posisi buka (°)
-SERVO_CLOSE = 150       # Sudut servo posisi tutup (°)
+# Dalam pulsa (mikrodetik), bukan sudut: pulsa langsung menentukan posisi tanduk
+# servo, jadi nilai kalibrasi tetap sama walau pemetaan sudut di firmware berubah.
+# BELUM dikalibrasi: cari nilainya di kartu "Kalibrasi Servo" (tab Kalibrasi).
+# Nilai hasil kalibrasi disimpan ke SERVO_SETTINGS_FILE dan dimuat saat start.
+SERVO_US_MIN = 500      # Batas aman pulsa (sama dengan firmware)
+SERVO_US_MAX = 2500
+SERVO_OPEN_US = 1000    # Pulsa posisi buka (µs)
+SERVO_CLOSE_US = 2000   # Pulsa posisi tutup (µs)
+SERVO_SETTINGS_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "servo_settings.json"
+)
 SWEEP_DELAY = 0.5       # Jeda antara buka → tutup (detik)
 
 # ═══════════════════════════════════════════════════════════════
@@ -282,8 +291,8 @@ CALIBRATION_SPEC = {
     "SAFETY_MAX_PWM":   (0, 255, 5, "Batas Kecepatan (PWM)"),
     "MOTION_HEARTBEAT": (0.05, 0.4, 0.01, "Heartbeat Motor (s)"),
     # Servo
-    "SERVO_OPEN":       (0, 180, 1, "Servo Buka (°)"),
-    "SERVO_CLOSE":      (0, 180, 1, "Servo Tutup (°)"),
+    "SERVO_OPEN_US":    (500, 2500, 10, "Servo Buka (µs)"),
+    "SERVO_CLOSE_US":   (500, 2500, 10, "Servo Tutup (µs)"),
     "SWEEP_DELAY":      (0.1, 2.0, 0.1, "Jeda Sweep (s)"),
     # Navigasi gyro & link
     "AIM_TOL_DEG":      (0.5, 10.0, 0.5, "Toleransi Bidik (°)"),
